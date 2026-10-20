@@ -68,6 +68,7 @@ import {
   predicateSpans,
   predicatesOverlap,
   type AxisDef,
+  type Criteria,
 } from 'lib/strategy/fingerprintAxes';
 import { parseAxisPredicate } from 'lib/strategy/fingerprintGrammar';
 
@@ -77,16 +78,45 @@ function dash(): ReactNode {
   return <span className="text-text-dim">—</span>;
 }
 
-/** A row's label sequence, or `null` when the axis is unset. */
+/** One shape of a row, and whether it EXCLUDES. A single-shape row is one include
+ *  shape, so every per-axis cell below reads exactly as it did before shape lists. */
+interface RowShape {
+  crit: Criteria;
+  not: boolean;
+}
+
+function rowShapes(r: Fingerprint): RowShape[] {
+  return [
+    ...[r.criteria ?? {}, ...(r.alt_criteria ?? [])].map((crit) => ({ crit, not: false })),
+    ...(r.exclude_criteria ?? []).map((crit) => ({ crit, not: true })),
+  ];
+}
+
+/** A row's FIRST include shape's label sequence, or `null` when the axis is unset.
+ *  One list for the single-number readers (length sort / filter, tint); the cells
+ *  that show labels read every shape through {@link rowLabelSets}. */
 function rowLabels(r: Fingerprint): string[] | null {
   const p = (r.criteria ?? {}).ix_labels;
   return p?.kind === 'sequence' ? configuredIxLabels(p.labels) : null;
 }
 
-/** A row's predicate on one numeric axis, rendered in that axis's display unit. */
+/** Every shape's label sequence, include then exclude. */
+function rowLabelSets(r: Fingerprint): { labels: string[]; not: boolean }[] {
+  return rowShapes(r).flatMap(({ crit, not }) => {
+    const p = crit.ix_labels;
+    const labels = p?.kind === 'sequence' ? configuredIxLabels(p.labels) : null;
+    return labels ? [{ labels, not }] : [];
+  });
+}
+
+/** A row's predicate on one numeric axis in that axis's display unit: one text per
+ *  shape that sets it, joined with ` | `, an exclude shape's prefixed `not `. */
 function axisText(r: Fingerprint, def: AxisDef): string | null {
-  const p = (r.criteria ?? {})[def.id];
-  return p ? formatPredicate(def.id, p) : null;
+  const parts = rowShapes(r).flatMap(({ crit, not }) => {
+    const p = crit[def.id];
+    return p ? [`${not ? 'not ' : ''}${formatPredicate(def.id, p)}`] : [];
+  });
+  return parts.length > 0 ? parts.join(' | ') : null;
 }
 
 /** The value a numeric axis SORTS by: its low bound, or its high bound when the
@@ -95,7 +125,9 @@ function axisText(r: Fingerprint, def: AxisDef): string | null {
  *  An unset axis sorts as `null` (last), never `0`, which would rank it as the
  *  smallest amount instead of no criterion. */
 function axisSortValue(r: Fingerprint, def: AxisDef): number | null {
-  const p = (r.criteria ?? {})[def.id];
+  // The first INCLUDE shape that sets the axis: an exclusion is not where a row's
+  // accepted values begin.
+  const p = rowShapes(r).find((s) => !s.not && s.crit[def.id] != null)?.crit[def.id];
   if (p == null || p.kind === 'sequence') return null;
   // The FIRST span's edge: a column orders on one number, and where the accepted
   // set begins is where a reader scanning it expects that number to be.
@@ -104,6 +136,14 @@ function axisSortValue(r: Fingerprint, def: AxisDef): number | null {
   if (b == null) return null;
   const n = Number(b);
   return Number.isFinite(n) ? (def.unit === 'lamports' ? n / 1e9 : n) : null;
+}
+
+/** Every shape's label sequence as one text (`not ` before an exclusion), or `null`
+ *  when no shape sets the axis. The search and tint value of the labels column. */
+function labelSetsText(r: Fingerprint): string | null {
+  const sets = rowLabelSets(r);
+  if (sets.length === 0) return null;
+  return sets.map((s) => `${s.not ? 'not ' : ''}${formatIxLabelsText(s.labels)}`).join('\n');
 }
 
 /** Param columns that tint when ≥2 fingerprints share the same value. */
@@ -115,7 +155,7 @@ const COLOR_COLS: {
     key: def.id,
     valueOf: (r: Fingerprint) =>
       def.kind === 'sequence'
-        ? (rowLabels(r) ? formatIxLabelsText(rowLabels(r)!) : null)
+        ? labelSetsText(r)
         : axisText(r, def),
   })),
   // The tags tint on their CONTENTS, not their count: the point on this page is
@@ -482,8 +522,6 @@ export function FingerprintsView({
         searchValue: (r: Fingerprint) => axisText(r, def) ?? '',
         sortValue: (r: Fingerprint) => axisSortValue(r, def),
         filterMatch: (r: Fingerprint, raw: string) => {
-          const p = (r.criteria ?? {})[def.id];
-          if (p == null || p.kind === 'sequence') return false;
           // Read through the SAME grammar the axis form saves with, so a condition
           // pasted from a row selects that row. Unparseable input matches nothing
           // rather than everything: a dropped filter reads as "no filter", which
@@ -492,8 +530,11 @@ export function FingerprintsView({
           if (want == null) return false;
           // Overlap, not containment — "could this row match anything I typed". For
           // a bare value the two are the same, so this only widens what the box can
-          // ask, never what a plain amount answers.
-          return predicatesOverlap(p, want);
+          // ask, never what a plain amount answers. ANY include shape may accept it.
+          return rowShapes(r).some(({ crit, not }) => {
+            const p = crit[def.id];
+            return !not && p != null && p.kind !== 'sequence' && predicatesOverlap(p, want);
+          });
         },
         filterPlaceholder: def.unit === 'lamports' ? 'e.g. 1.515' : 'e.g. 3',
         filterTitle: `${def.label} — ${def.definition}\n\nType a value or a condition (1..5, >=2, !=3, <=2 | >=7); a row matches when its own condition can accept something you typed.`,
@@ -505,11 +546,16 @@ export function FingerprintsView({
         label: 'ix len',
         group: 'ix',
         render: (r: Fingerprint) => {
-          const labels = rowLabels(r);
-          if (!labels) return dash();
-          return <span className="font-mono tabular-nums">{labels.length}</span>;
+          const sets = rowLabelSets(r);
+          if (sets.length === 0) return dash();
+          return (
+            <span className="font-mono tabular-nums">
+              {sets.map((s) => `${s.not ? 'not ' : ''}${s.labels.length}`).join(' | ')}
+            </span>
+          );
         },
-        searchValue: (r: Fingerprint) => String(rowLabels(r)?.length ?? ''),
+        searchValue: (r: Fingerprint) =>
+          rowLabelSets(r).map((s) => `${s.not ? 'not ' : ''}${s.labels.length}`).join(' | '),
         sortValue: (r: Fingerprint) => rowLabels(r)?.length ?? null,
         filterNumber: (r: Fingerprint) => rowLabels(r)?.length ?? null,
         sortable: true,
@@ -520,14 +566,27 @@ export function FingerprintsView({
         group: 'ix',
         width: '220px',
         render: (r: Fingerprint) => {
-          const labels = rowLabels(r);
-          return labels ? <IxLabelsDisplay labels={labels} copyJson /> : dash();
+          const sets = rowLabelSets(r);
+          if (sets.length === 0) return dash();
+          return (
+            <div className="flex flex-col gap-1">
+              {sets.map((s, i) => (
+                <div key={i} className="flex items-start gap-1">
+                  {s.not && <span className="text-[10px] uppercase text-red">not</span>}
+                  <IxLabelsDisplay labels={s.labels} copyJson />
+                </div>
+              ))}
+            </div>
+          );
         },
-        searchValue: (r: Fingerprint) => {
-          const labels = rowLabels(r);
-          return labels ? formatIxLabelsText(labels) : '';
+        searchValue: (r: Fingerprint) => labelSetsText(r) ?? '',
+        // ANY include shape's sequence: an exclusion is what the row rejects.
+        filterMatch: (r: Fingerprint, raw: string) => {
+          const include = rowLabelSets(r).filter((s) => !s.not);
+          return include.length === 0
+            ? ixLabelsMatchFilter(null, raw)
+            : include.some((s) => ixLabelsMatchFilter(s.labels, raw));
         },
-        filterMatch: (r: Fingerprint, raw: string) => ixLabelsMatchFilter(rowLabels(r), raw),
         filterPlaceholder: IX_LABELS_FILTER_PLACEHOLDER,
         filterTitle: IX_LABELS_FILTER_TITLE,
         cellClassName: cellTint('ix_labels'),

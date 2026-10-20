@@ -139,8 +139,19 @@ pub struct GroupSelection {
     /// the scope's axes are already expanded into `clauses`.
     pub scope_fingerprint_id: Option<Uuid>,
     /// Axis clauses, in [`GroupField`] declaration order (stable for display and for
-    /// the `find_or_create` identity that follows from it).
+    /// the `find_or_create` identity that follows from it). For a multi-shape scope
+    /// these are the scope's FIRST include shape plus the filters and the group key.
     pub clauses: Vec<Clause>,
+    /// The scope fingerprint's further include shapes. Not a clause: each one takes
+    /// the same filter and group-key clauses as the first shape at
+    /// [`materialize`](Self::materialize), so `(A or B) and group` becomes
+    /// `(A and group) or (B and group)`.
+    #[serde(skip)]
+    pub scope_alt: Vec<Criteria>,
+    /// The scope fingerprint's exclude shapes, kept verbatim: the group is a slice of
+    /// the scope's corpus, so what the scope rejected stays rejected.
+    #[serde(skip)]
+    pub scope_exclude: Vec<Criteria>,
     /// Whether [`materialize`](Self::materialize) would succeed — precomputed so the
     /// group card can gray out Promote instead of failing on click.
     pub promotable: bool,
@@ -227,25 +238,16 @@ impl GroupSelection {
         let mut sel = GroupSelection {
             scope_fingerprint_id: run.fingerprint_id,
             clauses: acc,
+            scope_alt: scope_fp.map(|f| f.alt_criteria.clone()).unwrap_or_default(),
+            scope_exclude: scope_fp.map(|f| f.exclude_criteria.clone()).unwrap_or_default(),
             promotable: false,
             blockers: Vec::new(),
             identity: None,
         };
-        // A multi-shape scope (several include shapes, or exclusions) is not one
-        // axis map, so step 1 copied only its first shape: a fingerprint built from
-        // it would match a different token set than the corpus the group came from.
-        if scope_fp.is_some_and(Fingerprint::is_multi_shape) {
-            sel.blockers.push(
-                "the scope fingerprint has several include or exclude shapes — promote from a \
-                 single-shape scope"
-                    .to_string(),
-            );
-            return sel;
-        }
         match sel.materialize(String::new()) {
             Ok(fp) => {
                 sel.promotable = true;
-                sel.identity = Some(serde_json::json!({
+                let mut identity = serde_json::json!({
                     "criteria": fp.criteria,
                     // `IDENTITY_WHERE` compares this too. A promoted group always names
                     // axes, so it is always `false` — but it has to be PRESENT, or the
@@ -253,7 +255,14 @@ impl GroupSelection {
                     // it claims to carry, and a saved wildcard row answers to a group it
                     // does not match.
                     "wildcard": fp.wildcard,
-                }));
+                });
+                // The shape lists are identity columns too, but only a multi-shape
+                // group has any, so a single-shape identity is unchanged.
+                if fp.is_multi_shape() {
+                    identity["alt_criteria"] = serde_json::json!(fp.alt_criteria);
+                    identity["exclude_criteria"] = serde_json::json!(fp.exclude_criteria);
+                }
+                sel.identity = Some(identity);
             }
             Err(b) => sel.blockers = b,
         }
@@ -300,8 +309,35 @@ impl GroupSelection {
             }
         }
 
+        // The scope's other include shapes take the SAME filter and group-key clauses
+        // as the first (a group's own slice overrides the scope on a field, in every
+        // shape), and its exclusions are kept: scope = (A or B) and not X, group =
+        // scope and g, so the promoted gate is (A and g) or (B and g), and not X.
+        let alt_criteria: Vec<Criteria> = self
+            .scope_alt
+            .iter()
+            .map(|shape| {
+                let mut shape = shape.clone();
+                for c in self.clauses.iter().filter(|c| c.origin != Origin::Scope) {
+                    if let (ClauseValue::Axis(pred), Some(axis)) =
+                        (&c.value, GroupField::from_tag(c.field).and_then(GroupField::axis))
+                    {
+                        shape.insert(axis, pred.clone());
+                    }
+                }
+                shape
+            })
+            .collect();
+
         let now = chrono::Utc::now();
-        let fp = Fingerprint { name, criteria, ..Fingerprint::empty(Uuid::new_v4(), now) };
+        let mut fp = Fingerprint {
+            name,
+            criteria,
+            alt_criteria,
+            exclude_criteria: self.scope_exclude.clone(),
+            ..Fingerprint::empty(Uuid::new_v4(), now)
+        };
+        fp.canonicalize();
 
         // The matcher refuses a criterion-less fingerprint (it would otherwise arm on
         // everything), so an unexpressible-only selection must fail here rather than
@@ -589,6 +625,67 @@ mod tests {
         let sel = GroupSelection::resolve(&r, Some(&scope), &json!({}));
         assert!(sel.is_scope_only());
         assert!(sel.promotable);
+    }
+
+    /// Scope `(A or B) and not X`, group `g`: the promoted gate is `(A and g) or
+    /// (B and g)` and not `X` — the same tokens the sweep measured, not shape A's.
+    #[test]
+    fn a_group_of_a_multi_shape_scope_promotes_to_every_shape_plus_the_group() {
+        let a = Criteria::new()
+            .with(AxisId::IxCount, AxisPredicate::exact(5))
+            .with(AxisId::CuLimit, AxisPredicate::exact(400_000));
+        let b = Criteria::new().with(AxisId::IxCount, AxisPredicate::exact(4));
+        let x = Criteria::new().with(AxisId::CuPrice, AxisPredicate::exact(250_000));
+        let mut scope = fp_with(a);
+        scope.alt_criteria = vec![b];
+        scope.exclude_criteria = vec![x.clone()];
+        scope.canonicalize();
+        let mut r = run();
+        r.fingerprint_id = Some(scope.id);
+        let key = json!({ "init_buy_lamports": window(Some(SOL), Some(2 * SOL - 1)) });
+        let sel = GroupSelection::resolve(&r, Some(&scope), &key);
+        assert!(sel.promotable, "blockers: {:?}", sel.blockers);
+        let fp = sel.materialize("t".into()).unwrap();
+        let group = AxisPredicate::Range { min: Some(SOL), max: Some(2 * SOL - 1) };
+        let shapes: Vec<&Criteria> = std::iter::once(&fp.criteria).chain(fp.alt_criteria.iter()).collect();
+        assert_eq!(shapes.len(), 2, "both include shapes survive");
+        for shape in shapes {
+            assert_eq!(shape.get(AxisId::InitBuyLamports), Some(&group), "the group narrows every shape");
+        }
+        assert_eq!(fp.exclude_criteria, vec![x], "the scope's exclusion is kept");
+        assert!(fp.validate().is_ok(), "{:?}", fp.problems());
+        // The identity the frontend compares names the lists too.
+        let id = sel.identity.expect("promotable");
+        assert!(id.get("alt_criteria").is_some() && id.get("exclude_criteria").is_some(), "{id}");
+    }
+
+    /// A single-shape scope's identity carries no shape lists, so it is unchanged.
+    #[test]
+    fn a_single_shape_identity_has_no_shape_lists() {
+        let key = json!({ "cu_limit": window(Some(1), Some(1)) });
+        let id = GroupSelection::resolve(&run(), None, &key).identity.expect("promotable");
+        assert!(id.get("alt_criteria").is_none() && id.get("exclude_criteria").is_none(), "{id}");
+    }
+
+    /// The group is a slice of the scope, so it overrides the scope on a field in
+    /// every shape, not only the first.
+    #[test]
+    fn the_group_overrides_the_scope_in_every_shape() {
+        let a = Criteria::new().with(AxisId::InitBuyLamports, AxisPredicate::range(Some(SOL), Some(9 * SOL)));
+        let b = Criteria::new()
+            .with(AxisId::IxCount, AxisPredicate::exact(4))
+            .with(AxisId::InitBuyLamports, AxisPredicate::range(Some(SOL), Some(9 * SOL)));
+        let mut scope = fp_with(a);
+        scope.alt_criteria = vec![b];
+        scope.canonicalize();
+        let mut r = run();
+        r.fingerprint_id = Some(scope.id);
+        let key = json!({ "init_buy_lamports": window(Some(2 * SOL), Some(3 * SOL - 1)) });
+        let fp = GroupSelection::resolve(&r, Some(&scope), &key).materialize("t".into()).unwrap();
+        let want = AxisPredicate::Range { min: Some(2 * SOL), max: Some(3 * SOL - 1) };
+        for shape in std::iter::once(&fp.criteria).chain(fp.alt_criteria.iter()) {
+            assert_eq!(shape.get(AxisId::InitBuyLamports), Some(&want));
+        }
     }
 
     /// The identity the frontend compares must carry every column `IDENTITY_WHERE`

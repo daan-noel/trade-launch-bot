@@ -522,3 +522,76 @@ fn follow_bought_sells_only_the_wallet_that_opened_the_position() {
         "a price exit still acts on our pile while the other wallet prints"
     );
 }
+
+// ── Stage tree ───────────────────────────────────────────────────────────────
+
+/// Two phases (on age, then on the highest pool) x two situations (on the pool now).
+fn tree_rule(extra: Value) -> CompiledRule {
+    let mut doc = json!({
+        "phases": [
+            { "name": "early", "until": [c("m_state.peak_liquidity_sol", ">=", 45.0)] },
+            { "name": "late" }
+        ],
+        "situations": [
+            { "name": "hot", "when": [c("m_state.liquidity_sol", ">=", 30.0)] },
+            { "name": "calm" }
+        ],
+        "cells": [
+            { "phase": "*", "situation": "hot", "on": [{ "if": [c("m_state.liquidity_sol", ">=", 30.0)], "sell": "burst" }] },
+            { "phase": "late", "situation": "hot", "on": [{ "if": [c("m_state.liquidity_sol", ">=", 60.0)], "sell": "big burst" }] }
+        ]
+    });
+    for (k, v) in extra.as_object().unwrap() {
+        doc[k] = v.clone();
+    }
+    compile(doc)
+}
+
+fn track(reserves: &[(f64, f64)]) -> TokenTrack {
+    let mut t = TokenTrack::new(t0());
+    for &(reserve, secs) in reserves {
+        t.on_trade(print(1.0, reserve, secs));
+    }
+    t
+}
+
+#[test]
+fn a_tree_cell_is_read_from_the_coin_on_every_step() {
+    let r = tree_rule(json!({}));
+    let tree = r.tree.as_ref().unwrap();
+    let calm = track(&[(20.0, 1.0)]);
+    assert_eq!(tree.cell_names(r.tree_cell(&calm, None, at(1.0)).unwrap()), ("early", "calm"));
+    // The highest pool passed 45, so the phase stays `late` though the pool fell back.
+    let fell = track(&[(50.0, 1.0), (25.0, 2.0)]);
+    assert_eq!(tree.cell_names(r.tree_cell(&fell, None, at(2.0)).unwrap()), ("late", "calm"));
+}
+
+#[test]
+fn a_tree_sells_on_the_print_that_makes_the_cell() {
+    let r = tree_rule(json!({}));
+    let early_hot = track(&[(35.0, 1.0)]);
+    assert_eq!(
+        r.held_step(&early_hot, &held(1.0, 1.0, 1.0, 0, 0.0), at(1.0)),
+        HeldAction::Sell { reason: ExitReason::Line("burst"), bps: None, of_bag: false, then_stage: None },
+        "same step: the print that makes the coin hot sells"
+    );
+    // late x hot replaces * x hot whole: 40 SOL sells nothing there, 65 does.
+    let late_hot = track(&[(50.0, 1.0), (40.0, 2.0)]);
+    assert_eq!(r.held_step(&late_hot, &held(1.0, 1.0, 1.0, 0, 0.0), at(2.0)), HeldAction::None);
+    let late_big = track(&[(50.0, 1.0), (65.0, 2.0)]);
+    assert_eq!(
+        r.held_step(&late_big, &held(1.0, 1.0, 1.0, 0, 0.0), at(2.0)),
+        HeldAction::Sell { reason: ExitReason::Line("big burst"), bps: None, of_bag: false, then_stage: None }
+    );
+}
+
+#[test]
+fn a_tree_buys_only_in_its_entry_cells_and_vetoes_on_the_current_cell() {
+    let r = tree_rule(json!({ "enter": { "filters": [c("m_state.liquidity_sol", ">", 0.0)], "cells": [["late", "calm"]] } }));
+    assert!(!r.can_enter(&track(&[(20.0, 1.0)]), at(1.0)), "early x calm is not an entry cell");
+    assert!(r.can_enter(&track(&[(50.0, 1.0), (25.0, 2.0)]), at(2.0)), "late x calm is");
+    assert_eq!(r.try_enter(&track(&[(20.0, 1.0)]), at(1.0), None, true), EntryVerdict::No, "outside the cells it waits");
+    let any = tree_rule(json!({ "enter": { "filters": [c("m_state.liquidity_sol", ">", 0.0)] } }));
+    let hot = track(&[(35.0, 1.0)]);
+    assert_eq!(any.sell_line_holding_before_entry(&hot, at(1.0)), Some(ExitReason::Line("burst")), "the cell's own sell vetoes the buy");
+}

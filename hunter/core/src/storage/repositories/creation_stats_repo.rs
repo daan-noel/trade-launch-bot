@@ -2,7 +2,7 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::{json, Value as JsonValue};
 use sqlx::PgPool;
 
-use hunter_engine::fingerprint::{AxisId, AxisPredicate};
+use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria};
 
 use crate::config::constants::tuning::PRIOR_LAUNCH_WINDOW_DAYS;
 use crate::grouping::{parse_filter, GroupField, GroupKey, GroupPlan, GroupValue, PartitionSpec};
@@ -466,6 +466,12 @@ fn group_value_sql(f: GroupField, spec: &PartitionSpec, ti_alias: &str) -> Strin
 /// the same type, so there is nothing to translate and nothing to get wrong.
 pub fn group_key_from_fingerprint(fp: &Fingerprint) -> JsonValue {
     let mut map = serde_json::Map::new();
+    // A group key is ONE axis map, so a multi-shape row has none: showing its first
+    // shape would badge the card as that single-shape fingerprint, which matches a
+    // different token set. The card reads as the whole corpus instead.
+    if fp.is_multi_shape() {
+        return JsonValue::Object(map);
+    }
     for (axis, pred) in fp.criteria.iter() {
         let value = match pred {
             AxisPredicate::Range { min, max } => GroupValue::Window { min: *min, max: *max },
@@ -480,41 +486,105 @@ pub fn group_key_from_fingerprint(fp: &Fingerprint) -> JsonValue {
     JsonValue::Object(map)
 }
 
-/// Every configured-axis clause for the "scope by saved fingerprint" path — the SQL
-/// mirror of `hunter_engine::fingerprint::matches`. No leading `AND`; join the
-/// clauses with `" AND "`.
+/// One shape's terms — every configured axis, to be ANDed — the SQL mirror of the
+/// engine's `shape_matches`. Generated from the shape's axis map, so an axis added to
+/// the registry is mirrored the moment [`axis_num_sql`] learns to read it. The
+/// retired form hand-listed five columns and could silently omit one, which reads
+/// as a wider corpus, not an error.
 ///
-/// Generated from the criteria map, so an axis added to the registry is mirrored
-/// the moment [`axis_num_sql`] learns to read it. The retired form hand-listed five
-/// columns and could silently omit one, which reads as a wider corpus, not an error.
+/// `ix_labels` is the only *bound* (not literal) predicate, since labels are
+/// arbitrary on-chain text rather than a trusted numeric column: its term carries a
+/// placeholder numbered from `first_ph`, and the labels go to `binds` in that order
+/// for the caller to bind as `text[]`.
+fn shape_terms(
+    shape: &Criteria,
+    ti_alias: &str,
+    first_ph: usize,
+    binds: &mut Vec<Vec<String>>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (axis, pred) in shape.iter() {
+        if let Some(expr) = axis_num_sql(axis, ti_alias) {
+            if let Some(clause) = predicate_sql(&expr, pred) {
+                out.push(clause);
+            }
+        } else if let AxisPredicate::Sequence { labels } = pred {
+            binds.push(labels.clone());
+            out.push(ix_labels_ordered_eq_sql("t.ix_labels", &format!("${}", first_ph + binds.len() - 1)));
+        }
+    }
+    out
+}
+
+/// A shape's terms as one parenthesised conjunction; `TRUE` when it constrains
+/// nothing.
+fn shape_conjunction(terms: &[String]) -> String {
+    if terms.is_empty() {
+        "TRUE".to_string()
+    } else {
+        format!("({})", terms.join(" AND "))
+    }
+}
+
+/// Every clause for the "scope by saved fingerprint" path — the SQL mirror of
+/// `hunter_engine::fingerprint::matches`: `(include shape OR ...) AND NOT (exclude
+/// shape) AND ...`. No leading `AND`; join the clauses with `" AND "`. Returns the
+/// `ix_labels` sequences the clauses reference, to bind as `text[]` in order from
+/// placeholder `first_ph`.
 ///
-/// `ix_labels` is excluded: it is the only *bound* (not literal) predicate, since
-/// labels are arbitrary on-chain text rather than a trusted numeric column — callers
-/// add it themselves via [`ix_labels_ordered_eq_sql`].
+/// A single-shape fingerprint with no exclusions yields one clause per axis, exactly
+/// as before shape lists existed.
+///
+/// **An exclude shape is `NOT COALESCE(shape, FALSE)`**, not a bare `NOT`: an
+/// unknown value makes the shape NULL, and `NOT NULL` is NULL, which a `WHERE`
+/// drops. The matcher keeps such a token (an unknown value fails the shape, so it
+/// is not excluded), and the mirror has to reach the same verdict.
 ///
 /// A criterion-less fingerprint mirrors the matcher's own guard (it never matches
 /// "everything") with a single `FALSE`.
-fn fingerprint_scope_clauses(fp: &Fingerprint, ti_alias: &str) -> Vec<String> {
+fn fingerprint_scope(
+    fp: &Fingerprint,
+    ti_alias: &str,
+    first_ph: usize,
+) -> (Vec<String>, Vec<Vec<String>>) {
     if !fp.has_any_criterion() {
-        return vec!["FALSE".to_string()];
+        return (vec!["FALSE".to_string()], Vec::new());
     }
+    let mut binds: Vec<Vec<String>> = Vec::new();
+    let mut out = Vec::new();
     // A wildcard matches every token, so it constrains nothing — the mirror of the
     // matcher's own short-circuit, at the same position and for the same reason.
     // Spelled out rather than left to fall through the loop on the strength of the
     // `fingerprints_wildcard_excludes_axes` CHECK: the two readers of `wildcard` have
     // to reach this verdict independently, or an axis that slips past the CHECK
     // narrows the dashboard while the engine still arms on everything.
-    if fp.wildcard {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    for (axis, pred) in fp.criteria.iter() {
-        let Some(expr) = axis_num_sql(axis, ti_alias) else { continue };
-        if let Some(clause) = predicate_sql(&expr, pred) {
-            out.push(clause);
+    if !fp.wildcard {
+        // The engine's own include-shape reader, so the mirror and the matcher cannot
+        // disagree about which maps are include shapes.
+        let engine_fp = fp.to_engine();
+        let mut shapes: Vec<Vec<String>> = engine_fp
+            .include_shapes()
+            .map(|c| shape_terms(c, ti_alias, first_ph, &mut binds))
+            .collect();
+        if shapes.len() == 1 {
+            out.extend(shapes.pop().unwrap_or_default());
+        } else {
+            let any: Vec<String> = shapes.iter().map(|t| shape_conjunction(t)).collect();
+            out.push(format!("({})", any.join(" OR ")));
         }
     }
-    out
+    for shape in &fp.exclude_criteria {
+        let terms = shape_terms(shape, ti_alias, first_ph, &mut binds);
+        out.push(format!("NOT COALESCE({}, FALSE)", shape_conjunction(&terms)));
+    }
+    (out, binds)
+}
+
+/// [`fingerprint_scope`]'s clauses alone — for a reader with no `ix_labels` binds to
+/// place (the tests).
+#[cfg(test)]
+fn fingerprint_scope_clauses(fp: &Fingerprint, ti_alias: &str) -> Vec<String> {
+    fingerprint_scope(fp, ti_alias, 1).0
 }
 
 /// One numeric predicate against one SQL expression — **the mirror of
@@ -832,23 +902,15 @@ impl CreationStatsRepo {
         bucket_unit: &str,
         f: StatsFilter<'_>,
     ) -> anyhow::Result<GroupedCreation> {
-        let mut preds = String::new();
-        for clause in fingerprint_scope_clauses(fp, "ti") {
-            preds.push_str(&format!("\n  AND {clause}"));
-        }
         // ix_labels: ordered exact match over the unwrapped label sequence
         // (handles bare-array + `{instructions:[…]}`) — the same
         // `ix_labels_ordered_eq_sql` SSOT `grouped()`'s `ix_labels_filter` uses.
-        // Bound as `text[]`. Owned so it can be re-bound across all three queries.
-        let ix_bind: Option<Vec<String>> = match fp.criteria.get(AxisId::IxLabels) {
-            Some(AxisPredicate::Sequence { labels }) => Some(labels.clone()),
-            _ => None,
-        };
-        if ix_bind.is_some() {
-            preds.push_str(&format!(
-                "\n  AND {}",
-                ix_labels_ordered_eq_sql("t.ix_labels", "$6")
-            ));
+        // Bound as `text[]` from `$6`, one per shape that names a sequence. Owned so
+        // they can be re-bound across all three queries.
+        let (clauses, ix_binds) = fingerprint_scope(fp, "ti", 6);
+        let mut preds = String::new();
+        for clause in clauses {
+            preds.push_str(&format!("\n  AND {clause}"));
         }
 
         let bkt = bucket_expr("(t.created_at AT TIME ZONE $1)", bucket_unit);
@@ -893,7 +955,7 @@ impl CreationStatsRepo {
                     .bind(f.to)
                     .bind(f.mayhem)
                     .bind(f.cashback);
-                if let Some(labels) = &ix_bind {
+                for labels in &ix_binds {
                     q = q.bind(labels.as_slice());
                 }
                 q.fetch_all(&self.pool).await?
@@ -1083,12 +1145,9 @@ pub fn build_grouped_tokens_where_scoped(
 
     // Fingerprint scope — runs against `token_repo`'s query, which joins
     // `tokens_info` as `i` (NOT `grouped_scoped`'s `ti`; see `group_value_sql`).
-    clauses.extend(fingerprint_scope_clauses(fp, "i"));
-    if let Some(AxisPredicate::Sequence { labels }) = fp.criteria.get(AxisId::IxLabels) {
-        args.push(SqlArg::StrArray(labels.clone()));
-        let ph = format!("${}", args.len());
-        clauses.push(ix_labels_ordered_eq_sql("t.ix_labels", &ph));
-    }
+    let (scope, ix_binds) = fingerprint_scope(fp, "i", args.len() + 1);
+    clauses.extend(scope);
+    args.extend(ix_binds.into_iter().map(SqlArg::StrArray));
 
     // Recurring weekly slot (a heatmap tile) — identical to `build_grouped_tokens_where`.
     if let (Some(dow), Some(hour)) = (dow, hour) {
@@ -1148,7 +1207,7 @@ pub fn build_grouped_tokens_order(sorting: &[(String, bool)]) -> String {
 mod grouped_tokens_tests {
     use super::*;
     use crate::api::handlers::tokens::SqlArg;
-    use hunter_engine::fingerprint::Criteria;
+
     use uuid::Uuid;
 
     const SOL: u128 = 1_000_000_000;
@@ -1293,6 +1352,75 @@ mod grouped_tokens_tests {
         ));
         let sql = fingerprint_scope_clauses(&fp, "ti").join(" AND ");
         assert!(!sql.contains("Pump.Fun"), "labels must be bound, not inlined: {sql}");
+    }
+
+    fn seq(label: &str) -> AxisPredicate {
+        AxisPredicate::Sequence { labels: vec![label.into()] }
+    }
+
+    /// Several include shapes lower to an OR of conjunctions, each label sequence
+    /// bound under its own placeholder in order — never inlined.
+    #[test]
+    fn include_shapes_lower_to_an_or_of_conjunctions_with_numbered_binds() {
+        let mut fp = fp_with(
+            Criteria::new().with(AxisId::IxLabels, seq("A")).with(AxisId::CuLimit, AxisPredicate::exact(400_000)),
+        );
+        fp.alt_criteria = vec![Criteria::new().with(AxisId::IxLabels, seq("B"))];
+        let (clauses, binds) = fingerprint_scope(&fp, "ti", 6);
+        assert_eq!(clauses.len(), 1, "{clauses:?}");
+        let sql = &clauses[0];
+        assert!(sql.contains(" OR ") && sql.contains(" AND "), "{sql}");
+        assert!(sql.contains("= $6") && sql.contains("= $7"), "one placeholder per shape: {sql}");
+        assert!(!sql.contains("'A'") && !sql.contains("'B'"), "labels are bound: {sql}");
+        assert_eq!(binds, vec![vec!["A".to_string()], vec!["B".to_string()]]);
+    }
+
+    /// An exclude shape must keep a token whose value is unknown: `NOT NULL` is NULL
+    /// and a `WHERE` would drop it, which the matcher does not.
+    #[test]
+    fn an_exclude_shape_keeps_a_token_with_an_unknown_value() {
+        let mut fp = fp_with(Criteria::new());
+        fp.wildcard = true;
+        fp.exclude_criteria = vec![Criteria::new().with(AxisId::CuPrice, AxisPredicate::exact(250_000))];
+        let (clauses, binds) = fingerprint_scope(&fp, "ti", 6);
+        assert!(binds.is_empty());
+        assert_eq!(clauses.len(), 1, "a wildcard adds no include clause: {clauses:?}");
+        assert!(clauses[0].starts_with("NOT COALESCE("), "{}", clauses[0]);
+        assert!(clauses[0].ends_with(", FALSE)"), "{}", clauses[0]);
+    }
+
+    /// Placeholders keep counting across the include and exclude lists.
+    #[test]
+    fn binds_are_numbered_across_include_and_exclude_shapes() {
+        let mut fp = fp_with(Criteria::new().with(AxisId::IxLabels, seq("A")));
+        fp.exclude_criteria = vec![Criteria::new().with(AxisId::IxLabels, seq("X"))];
+        let (clauses, binds) = fingerprint_scope(&fp, "i", 3);
+        assert_eq!(binds.len(), 2);
+        assert!(clauses[0].contains("= $3"), "{}", clauses[0]);
+        assert!(clauses[1].contains("= $4"), "{}", clauses[1]);
+    }
+
+    /// A single-shape row with no exclusions keeps one clause per axis, so the SQL it
+    /// has always produced is unchanged.
+    #[test]
+    fn a_single_shape_row_keeps_one_clause_per_axis() {
+        let fp = fp_with(
+            Criteria::new()
+                .with(AxisId::CuLimit, AxisPredicate::exact(1))
+                .with(AxisId::CuPrice, AxisPredicate::exact(2)),
+        );
+        let (clauses, _) = fingerprint_scope(&fp, "ti", 6);
+        assert_eq!(clauses.len(), 2, "{clauses:?}");
+        assert!(clauses.iter().all(|c| !c.contains(" OR ")));
+    }
+
+    /// A card for a multi-shape row carries no single-shape key — it would badge as
+    /// a different fingerprint.
+    #[test]
+    fn a_multi_shape_row_has_no_group_key() {
+        let mut fp = fp_with(Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(1)));
+        fp.exclude_criteria = vec![Criteria::new().with(AxisId::CuPrice, AxisPredicate::exact(2))];
+        assert_eq!(group_key_from_fingerprint(&fp), json!({}));
     }
 
     /// The engine tallies prior launches over a bounded trailing window; the mirror

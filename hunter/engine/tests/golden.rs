@@ -14,7 +14,7 @@ use hunter_engine::event::{
 use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria, Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::{Side, TradeLite, Ts};
-use hunter_engine::reduce::reduce;
+use hunter_engine::reduce::{reduce, Effects};
 use hunter_engine::EngineState;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -2489,4 +2489,131 @@ fn a_partial_latched_before_a_failed_buy_sells_on_the_retry_fill() {
     assert_eq!(buys(&fx).len(), 1, "he still holds most of the bag");
     let fx = reduce(&mut s, Event::FillConfirmed { intent: buy_intent(&fx), fill: fill(1.0, 2.0) });
     assert_eq!(sell_portions(&fx), vec![Portion::BpsOfRemaining(4000)]);
+}
+
+// ── Include / exclude shapes through the whole fold ───────────────────────────
+
+fn labels_token(n: usize) -> Box<TokenFingerprint> {
+    Box::new(TokenFingerprint { ix_labels: vec!["ix".to_string(); n], ..Default::default() })
+}
+
+fn spawn(s: &mut EngineState, mint: &str, tf: Box<TokenFingerprint>) -> Effects {
+    reduce(
+        s,
+        Event::TokenCreated { mint: Mint::from(mint), fp: tf, at: ts(0.0), creator_wallet_hash: None, identity: None, creation_slot: None },
+    )
+}
+
+fn settle(s: &mut EngineState, mint: &str, buy_lamports: u64) -> Effects {
+    reduce(
+        s,
+        Event::FirstSlotSettled {
+            mint: Mint::from(mint),
+            buy_lamports,
+            sell_lamports: 0,
+            at: ts(1.0),
+            creator_stand_in_wallet_hash: None,
+        },
+    )
+}
+
+/// Whitelist: `(5ix and cu_limit=400K) or (4ix and first-slot buy >= 1 SOL)`. The
+/// second shape defers, so the whole fingerprint waits for the slot; at settle a
+/// token arms on whichever shape it satisfies, and on neither it is dropped.
+#[test]
+fn a_whitelist_of_two_shapes_arms_on_either_and_drops_the_rest() {
+    let mut s = EngineState::new();
+    let mut fp = cu_fp(1);
+    fp.criteria = Criteria::new()
+        .with(AxisId::IxCount, AxisPredicate::exact(5))
+        .with(AxisId::CuLimit, AxisPredicate::exact(400_000));
+    fp.alt_criteria = vec![Criteria::new()
+        .with(AxisId::IxCount, AxisPredicate::exact(4))
+        .with(AxisId::FirstSlotBuyLamports, AxisPredicate::range(Some(1_000_000_000), None))];
+    fp.canonicalize();
+    assert!(fp.validate().is_ok(), "{:?}", fp.problems());
+    reduce(&mut s, reload(vec![rule_capped(1, 1, json!({ "take_profit": 100 }), 10, 0)], vec![fp]));
+
+    // Shape A (5ix, 400K): pending at creation, armed and buys once the slot settles.
+    let a = Box::new(TokenFingerprint {
+        ix_labels: vec!["ix".to_string(); 5],
+        cu_limit: Some(400_000),
+        ..Default::default()
+    });
+    assert!(buys(&spawn(&mut s, "tokA", a)).is_empty(), "pending until the slot settles");
+    assert_eq!(buys(&settle(&mut s, "tokA", 0)), vec![(rid(1), BUY)], "shape A arms");
+
+    // Shape B (4ix): needs the first-slot buy; arms with 2 SOL ...
+    spawn(&mut s, "tokB", labels_token(4));
+    assert_eq!(buys(&settle(&mut s, "tokB", 2_000_000_000)), vec![(rid(1), BUY)], "shape B arms");
+
+    // ... and a 4ix token that settles under 1 SOL satisfies neither shape.
+    spawn(&mut s, "tokB2", labels_token(4));
+    assert!(buys(&settle(&mut s, "tokB2", 10)).is_empty());
+    assert!(!s.tokens.contains_key(&Mint::from("tokB2")), "dropped, pruned");
+
+    // 5ix with the wrong cu_limit is neither shape A nor B: never tracked.
+    let wrong = Box::new(TokenFingerprint {
+        ix_labels: vec!["ix".to_string(); 5],
+        cu_limit: Some(200_000),
+        ..Default::default()
+    });
+    assert!(spawn(&mut s, "tokC", wrong).is_empty());
+    assert!(!s.tokens.contains_key(&Mint::from("tokC")));
+    // 6ix matches no shape at all.
+    assert!(spawn(&mut s, "tokD", labels_token(6)).is_empty());
+}
+
+/// Blacklist: every token except 7ix. An instant exclusion decides at creation.
+#[test]
+fn a_blacklist_skips_the_excluded_shape_at_creation_and_arms_everything_else() {
+    let mut s = EngineState::new();
+    let mut fp = cu_fp(1);
+    fp.wildcard = true;
+    fp.criteria = Criteria::new();
+    fp.exclude_criteria = vec![Criteria::new().with(AxisId::IxCount, AxisPredicate::exact(7))];
+    assert!(fp.validate().is_ok(), "{:?}", fp.problems());
+    reduce(&mut s, reload(vec![rule_capped(1, 1, json!({ "take_profit": 100 }), 10, 0)], vec![fp]));
+
+    assert_eq!(buys(&spawn(&mut s, "five", labels_token(5))), vec![(rid(1), BUY)]);
+    assert!(spawn(&mut s, "seven", labels_token(7)).is_empty());
+    assert!(!s.tokens.contains_key(&Mint::from("seven")), "the excluded token is never tracked");
+}
+
+/// A deferred axis in an EXCLUDE shape makes even a wildcard wait for the slot:
+/// until it settles the shape cannot say whether it rejects. At settle, the token
+/// inside the excluded window is dropped and one outside it arms.
+#[test]
+fn a_deferred_exclusion_holds_a_wildcard_until_the_slot_settles() {
+    let mut s = EngineState::new();
+    let mut fp = cu_fp(1);
+    fp.wildcard = true;
+    fp.criteria = Criteria::new();
+    fp.exclude_criteria = vec![Criteria::new()
+        .with(AxisId::FirstSlotBuyLamports, AxisPredicate::range(Some(2_000_000_000), None))];
+    reduce(&mut s, reload(vec![rule_capped(1, 1, json!({ "take_profit": 100 }), 10, 0)], vec![fp]));
+
+    assert!(buys(&spawn(&mut s, "big", labels_token(5))).is_empty(), "waits, does not arm at birth");
+    assert!(buys(&settle(&mut s, "big", 3_000_000_000)).is_empty(), "inside the excluded window");
+    assert!(!s.tokens.contains_key(&Mint::from("big")));
+
+    assert!(buys(&spawn(&mut s, "small", labels_token(5))).is_empty());
+    assert_eq!(buys(&settle(&mut s, "small", 500_000_000)), vec![(rid(1), BUY)], "outside it: arms");
+}
+
+/// An exclude shape only rejects what it can see: a token whose excluded axis is
+/// unknown is not excluded.
+#[test]
+fn an_exclusion_on_an_unknown_value_does_not_reject() {
+    let mut s = EngineState::new();
+    let mut fp = cu_fp(1);
+    fp.wildcard = true;
+    fp.criteria = Criteria::new();
+    fp.exclude_criteria = vec![Criteria::new().with(AxisId::CuPrice, AxisPredicate::exact(250_000))];
+    reduce(&mut s, reload(vec![rule_capped(1, 1, json!({ "take_profit": 100 }), 10, 0)], vec![fp]));
+    // No cu_price observed: kept and armed.
+    assert_eq!(buys(&spawn(&mut s, "unknown", Box::new(TokenFingerprint::default()))), vec![(rid(1), BUY)]);
+    // The excluded value is rejected.
+    let hit = Box::new(TokenFingerprint { cu_price: Some(250_000), ..Default::default() });
+    assert!(spawn(&mut s, "hit", hit).is_empty());
 }

@@ -6,6 +6,8 @@
 //!   `reserve_sol`. Undefined (`NaN`) until the first trade — with no market
 //!   data there is no liquidity to compare, and a `NaN` satisfies no condition
 //!   (evaluator contract), so a rule can never fire on absent data.
+//! * `peak_liquidity` — the highest `liquidity` so far. **Monotonic**; `NaN` until the
+//!   first trade.
 //! * `on_curve` — 1 while the most recent trade was on the bonding curve, 0 once it
 //!   was on the AMM. `liquidity` reads real SOL on either venue, so without this a
 //!   curve-only rule would also pass on a graduated pool that drained. `NaN` until
@@ -26,6 +28,8 @@ use super::{secs_between, Metric, Ts};
 pub struct StateMetrics {
     /// SOL reserves at the most recent trade. `None` until the first trade.
     reserve_sol: Option<f64>,
+    /// Highest `reserve_sol` so far. `None` until the first trade.
+    peak_reserve_sol: Option<f64>,
     /// Venue of the most recent trade. `None` until the first trade.
     on_curve: Option<bool>,
 }
@@ -36,6 +40,7 @@ impl StateMetrics {
     pub fn on_trade(&mut self, reserve_sol: f64, on_curve: bool) {
         if reserve_sol.is_finite() {
             self.reserve_sol = Some(reserve_sol);
+            self.peak_reserve_sol = Some(self.peak_reserve_sol.map_or(reserve_sol, |p| p.max(reserve_sol)));
         }
         self.on_curve = Some(on_curve);
     }
@@ -56,6 +61,7 @@ impl StateMetrics {
         match id {
             Metric::AgeSec => Self::time(created_at, now),
             Metric::LiquiditySol => self.liquidity(),
+            Metric::PeakLiquiditySol => self.peak_reserve_sol.unwrap_or(f64::NAN),
             Metric::OnCurve => self.on_curve.map_or(f64::NAN, |c| f64::from(u8::from(c))),
             _ => f64::NAN,
         }
@@ -89,6 +95,18 @@ mod tests {
         assert_eq!(s.liquidity(), 12.5);
         s.on_trade(9.0, true); // most recent wins
         assert_eq!(s.liquidity(), 9.0);
+    }
+
+    #[test]
+    fn peak_liquidity_never_falls() {
+        let mut s = StateMetrics::default();
+        let peak = |s: &StateMetrics| s.value(Metric::PeakLiquiditySol, ts(0), ts(1));
+        assert!(peak(&s).is_nan());
+        s.on_trade(20.0, true);
+        s.on_trade(48.0, true);
+        s.on_trade(30.0, true);
+        assert_eq!(peak(&s), 48.0);
+        assert_eq!(s.liquidity(), 30.0);
     }
 
     #[test]

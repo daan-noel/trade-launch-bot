@@ -7,6 +7,8 @@
 //   signals  named conditions, written once, used by name in any condition
 //   always   sell lines checked first, in every stage
 //   stages   the steps after the buy, each with its own lines and an optional deadline
+//   tree     instead of stages: `phases` (when in its life) x `situations` (what happens
+//            now) = cells, each running the lines of its most specific `cells` entry
 //
 // The editor holds a {@link RuleDoc}: the wire shape with every condition expression
 // parsed and a stable `id` on each list item (a condition input keeps its draft text,
@@ -29,6 +31,10 @@ export const MAX_ENTRY_SLIPPAGE_PCT = 90;
 
 /** Most stages a rule may have (engine `MAX_STAGES`). */
 export const MAX_STAGES = 32;
+
+/** Most phases, and most situations, a stage tree may have (engine `MAX_PHASES` / `MAX_SITUATIONS`). */
+export const MAX_PHASES = 16;
+export const MAX_SITUATIONS = 16;
 
 export interface MetricCond {
   kind: 'metric';
@@ -89,6 +95,41 @@ export interface Stage {
   then: string | null;
 }
 
+/** A stage-tree phase: where the coin is in its life. `until` (AND, on metrics that never
+ *  fall) ends it; the last phase has none. The coin's phase is how many leading phases'
+ *  `until` hold now, so it only moves forward. */
+export interface Phase {
+  id: string;
+  name: string;
+  until: Cond[];
+}
+
+/** A stage-tree situation: what is happening now. The first whose `when` (AND) holds wins;
+ *  the last has none and catches the rest. */
+export interface Situation {
+  id: string;
+  name: string;
+  when: Cond[];
+}
+
+/** The lines of the cells one entry covers. `null` = `*`, every phase / situation. */
+export interface CellEntry {
+  id: string;
+  phase: string | null;
+  situation: string | null;
+  on: Line[];
+}
+
+/** The held side as a grid of phase x situation cells instead of a stage list. */
+export interface Tree {
+  phases: Phase[];
+  situations: Situation[];
+  cells: CellEntry[];
+}
+
+/** A cell by `[phase, situation]` name, `null` = every one. */
+export type CellRef = [string | null, string | null];
+
 export interface Signal {
   id: string;
   name: string;
@@ -106,6 +147,8 @@ export interface Enter {
   size_pct_of_pool: number | null;
   /** Real buys only: percent fewer tokens than quoted before the buy reverts. `null` = Settings. */
   slippage_pct: number | null;
+  /** Stage tree only: the cells a buy may start in. Empty = every cell. */
+  cells: CellRef[];
 }
 
 export interface ReEntry {
@@ -122,6 +165,8 @@ export interface RuleDoc {
   signals: Signal[];
   always: Line[];
   stages: Stage[];
+  /** A stage tree instead of `stages`. */
+  tree: Tree | null;
   reentry: ReEntry | null;
   exclusive: boolean;
   priority: number;
@@ -141,12 +186,13 @@ export function newId(): string {
 
 export function emptyRuleDoc(): RuleDoc {
   return {
-    enter: { event: [], filters: [], final_filters: [], lock: null, size_pct_of_pool: null, slippage_pct: null },
+    enter: { event: [], filters: [], final_filters: [], lock: null, size_pct_of_pool: null, slippage_pct: null, cells: [] },
     take_profit: null,
     stop_loss: null,
     signals: [],
     always: [],
     stages: [],
+    tree: null,
     reentry: null,
     exclusive: false,
     priority: 0,
@@ -167,6 +213,15 @@ export function newLine(partial: Partial<Omit<Line, 'id'>> = {}): Line {
 
 export function newStage(name: string): Stage {
   return { id: newId(), name, ends: null, on: [], at_end: [], then: null };
+}
+
+/** A new tree: one phase and one situation, so it is valid before anything is added. */
+export function newTree(): Tree {
+  return {
+    phases: [{ id: newId(), name: 'life', until: [] }],
+    situations: [{ id: newId(), name: 'any', when: [] }],
+    cells: [],
+  };
 }
 
 // ── Parse (tolerant of shape, strict about the format) ─────────────────────────
@@ -241,6 +296,42 @@ function stageFromJson(v: unknown): Stage {
   };
 }
 
+/** `"*"` = every one. */
+const cellNameFromJson = (v: unknown): string | null => (v === '*' ? null : (str(v) ?? ''));
+const cellNameToJson = (n: string | null): string => n ?? '*';
+
+function treeFromJson(o: Obj): Tree | null {
+  if (!Array.isArray(o.phases) || !Array.isArray(o.situations)) {
+    if (o.phases != null || o.situations != null || o.cells != null) {
+      throw new Error('a stage tree needs both `phases` and `situations`');
+    }
+    return null;
+  }
+  const named = (v: unknown, key: string) => {
+    const x = isObj(v) ? v : {};
+    return { id: newId(), name: str(x.name) ?? '', conds: condsFromJson(x[key]) };
+  };
+  return {
+    phases: o.phases.map((v) => {
+      const { id, name, conds } = named(v, 'until');
+      return { id, name, until: conds };
+    }),
+    situations: o.situations.map((v) => {
+      const { id, name, conds } = named(v, 'when');
+      return { id, name, when: conds };
+    }),
+    cells: (Array.isArray(o.cells) ? o.cells : []).map((v) => {
+      const x = isObj(v) ? v : {};
+      return { id: newId(), phase: cellNameFromJson(x.phase), situation: cellNameFromJson(x.situation), on: linesFromJson(x.on) };
+    }),
+  };
+}
+
+function enterCellsFromJson(v: unknown): CellRef[] {
+  if (!Array.isArray(v)) return [];
+  return v.map((c): CellRef => (Array.isArray(c) ? [cellNameFromJson(c[0]), cellNameFromJson(c[1])] : ['', '']));
+}
+
 /** Read a stored `params` document into the editor model. Throws with the reason when
  *  the document is not a v2 rule; shape slips inside a v2 document are kept for the
  *  validator to name. */
@@ -271,12 +362,14 @@ export function ruleDocFromJson(raw: unknown): RuleDoc {
       lock,
       size_pct_of_pool: numOrNull(e.size_pct_of_pool),
       slippage_pct: numOrNull(e.slippage_pct),
+      cells: enterCellsFromJson(e.cells),
     },
     take_profit: numOrNull(o.take_profit),
     stop_loss: numOrNull(o.stop_loss),
     signals,
     always: linesFromJson(o.always),
     stages: Array.isArray(o.stages) ? o.stages.map(stageFromJson) : [],
+    tree: treeFromJson(o),
     reentry: re
       ? { cooldown_sec: numOrNull(re.cooldown_sec) ?? NaN, max_per_coin: numOrNull(re.max_per_coin) ?? NaN }
       : null,
@@ -336,6 +429,7 @@ export function ruleDocToJson(d: RuleDoc): Obj {
   if (d.enter.lock) enter.lock = d.enter.lock;
   if (d.enter.size_pct_of_pool != null) enter.size_pct_of_pool = d.enter.size_pct_of_pool;
   if (d.enter.slippage_pct != null) enter.slippage_pct = d.enter.slippage_pct;
+  if (d.enter.cells.length) enter.cells = d.enter.cells.map(([p, s]) => [cellNameToJson(p), cellNameToJson(s)]);
   if (Object.keys(enter).length) root.enter = enter;
   if (d.take_profit != null) root.take_profit = d.take_profit;
   if (d.stop_loss != null) root.stop_loss = d.stop_loss;
@@ -346,6 +440,18 @@ export function ruleDocToJson(d: RuleDoc): Obj {
   }
   if (d.always.length) root.always = d.always.map(lineToJson);
   if (d.stages.length) root.stages = d.stages.map(stageToJson);
+  if (d.tree) {
+    const named = (name: string, key: string, conds: Cond[]): Obj => (conds.length ? { name, [key]: conds.map(condToJson) } : { name });
+    root.phases = d.tree.phases.map((p) => named(p.name, 'until', p.until));
+    root.situations = d.tree.situations.map((s) => named(s.name, 'when', s.when));
+    if (d.tree.cells.length) {
+      root.cells = d.tree.cells.map((c) => ({
+        phase: cellNameToJson(c.phase),
+        situation: cellNameToJson(c.situation),
+        on: c.on.map(lineToJson),
+      }));
+    }
+  }
   if (d.reentry) root.reentry = { cooldown_sec: d.reentry.cooldown_sec, max_per_coin: d.reentry.max_per_coin };
   if (d.exclusive) root.exclusive = true;
   if (d.priority !== 0) root.priority = d.priority;
@@ -355,9 +461,10 @@ export function ruleDocToJson(d: RuleDoc): Obj {
 
 // ── Walks ───────────────────────────────────────────────────────────────────
 
-/** Every line: `always`, then each stage's `on` and `at_end` (the engine's order). */
+/** Every line: `always`, then each stage's `on` and `at_end`, then each tree cell
+ *  entry's (the engine's order). */
 export function allLines(d: RuleDoc): Line[] {
-  return [...d.always, ...d.stages.flatMap((s) => [...s.on, ...s.at_end])];
+  return [...d.always, ...d.stages.flatMap((s) => [...s.on, ...s.at_end]), ...(d.tree?.cells.flatMap((c) => c.on) ?? [])];
 }
 
 /** Every live metric condition the rule reads, in every part. */
@@ -370,6 +477,8 @@ export function liveMetricConds(d: RuleDoc): MetricCond[] {
   take(d.enter.filters);
   take(d.enter.final_filters);
   for (const s of d.signals) for (const g of s.groups) take(g);
+  for (const p of d.tree?.phases ?? []) take(p.until);
+  for (const s of d.tree?.situations ?? []) take(s.when);
   for (const l of allLines(d)) if (!l.off) take(l.if);
   return out;
 }
@@ -400,6 +509,7 @@ function mapLines(d: RuleDoc, f: (l: Line) => Line): RuleDoc {
     ...d,
     always: d.always.map(f),
     stages: d.stages.map((s) => ({ ...s, on: s.on.map(f), at_end: s.at_end.map(f) })),
+    tree: d.tree && { ...d.tree, cells: d.tree.cells.map((c) => ({ ...c, on: c.on.map(f) })) },
   };
 }
 
@@ -429,5 +539,48 @@ export function renameSignal(d: RuleDoc, from: string, to: string): RuleDoc {
       final_filters: mapConds(next.enter.final_filters, f),
     },
     signals: next.signals.map((s) => (s.name === from ? { ...s, name: to } : s)),
+    tree: next.tree && {
+      ...next.tree,
+      situations: next.tree.situations.map((s) => ({ ...s, when: mapConds(s.when, f) })),
+    },
   };
+}
+
+/** Rename a phase (`which = 0`) or a situation (`1`) and every cell and buy cell that names it. */
+export function renameTreeName(d: RuleDoc, which: 0 | 1, from: string, to: string): RuleDoc {
+  if (!d.tree) return d;
+  const swap = (n: string | null) => (n === from ? to : n);
+  const tree: Tree = {
+    phases: which === 0 ? d.tree.phases.map((p) => (p.name === from ? { ...p, name: to } : p)) : d.tree.phases,
+    situations: which === 1 ? d.tree.situations.map((s) => (s.name === from ? { ...s, name: to } : s)) : d.tree.situations,
+    cells: d.tree.cells.map((c) => (which === 0 ? { ...c, phase: swap(c.phase) } : { ...c, situation: swap(c.situation) })),
+  };
+  const cells = d.enter.cells.map(([p, s]): CellRef => (which === 0 ? [swap(p), s] : [p, swap(s)]));
+  return { ...d, tree, enter: { ...d.enter, cells } };
+}
+
+/** Drop a phase (`which = 0`) or a situation (`1`) and every cell and buy cell that names it. */
+export function removeTreeName(d: RuleDoc, which: 0 | 1, name: string): RuleDoc {
+  if (!d.tree) return d;
+  const tree: Tree = {
+    phases: which === 0 ? d.tree.phases.filter((p) => p.name !== name) : d.tree.phases,
+    situations: which === 1 ? d.tree.situations.filter((s) => s.name !== name) : d.tree.situations,
+    cells: d.tree.cells.filter((c) => (which === 0 ? c.phase : c.situation) !== name),
+  };
+  const cells = d.enter.cells.filter(([p, s]) => (which === 0 ? p : s) !== name);
+  return { ...d, tree, enter: { ...d.enter, cells } };
+}
+
+// -- Stage-tree cells (the engine's `CompiledTree`) --------------------------------
+
+/** The entry whose lines cell `phase x situation` runs: the most specific one that covers
+ *  it (both named, then the phase, then the situation, then `* x *`). */
+export function cellEntryFor(t: Tree, phase: string, situation: string): CellEntry | undefined {
+  const find = (p: string | null, s: string | null) => t.cells.find((c) => c.phase === p && c.situation === s);
+  return find(phase, situation) ?? find(phase, null) ?? find(null, situation) ?? find(null, null);
+}
+
+/** A buy may start in cell `phase x situation` (every cell when `enter.cells` is empty). */
+export function cellBuys(cells: CellRef[], phase: string, situation: string): boolean {
+  return cells.length === 0 || cells.some(([p, s]) => (p == null || p === phase) && (s == null || s === situation));
 }

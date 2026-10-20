@@ -94,6 +94,28 @@
           "unit": "sol"
         },
         {
+          "eq_tolerance": 0.1,
+          "example": "m_state.peak_liquidity_sol >= 45 : the pool has held 45+ real SOL at some point.",
+          "hue": 228,
+          "monotonic": true,
+          "name": "peak_liquidity_sol",
+          "note": "NaN before the first print. Either venue: after graduation it compares AMM SOL with the curve's.",
+          "path": "m_state.peak_liquidity_sol",
+          "phrase": "most real SOL the pool has held",
+          "position": false,
+          "spans": {
+            "life": true,
+            "since_age": false,
+            "since_amm": false,
+            "slice": false,
+            "window": false
+          },
+          "summary": "The highest liquidity_sol any print has left so far. Never falls, so a stage cut on it moves one way.",
+          "tag_level": "trade",
+          "tags": "none",
+          "unit": "sol"
+        },
+        {
           "eq_tolerance": 0.5,
           "example": "m_state.on_curve = 1 : the coin has not graduated.",
           "hue": 230,
@@ -913,6 +935,30 @@
       "key": "stages",
       "summary": "The steps after the buy. The position starts in the first stage; each stage has its own lines and may have a deadline. A guard that starts later lives on the stage a line moves to.",
       "title": "Stages"
+    },
+    {
+      "example": "launch until age_sec >= 1.9 -> early until age_sec >= 8.5 -> climb.",
+      "key": "phases",
+      "summary": "A stage tree's life steps, in order, instead of stages. A phase ends when its until holds (metrics that never fall: age, the highest pool); the coin's phase is how many have ended, so it only moves forward. The last phase has no until.",
+      "title": "Phases"
+    },
+    {
+      "example": "burst when outsiders buy 0.5 SOL in 1 s, else leaving, else pump.",
+      "key": "situations",
+      "summary": "What is happening now, checked top to bottom on every print and tick; the first whose when holds is the coin's situation. The last has no when and catches the rest.",
+      "title": "Situations"
+    },
+    {
+      "example": "* x burst: sell. climb x burst: sell only on 1.5 SOL.",
+      "key": "cells",
+      "summary": "Lines for phase x situation cells; * covers every phase or situation. A cell runs the lines of the one most specific entry covering it, after Always, on the same print that put the coin there. A cell has no go and no part sell.",
+      "title": "Cells"
+    },
+    {
+      "example": "[early, leaving], [climb, *].",
+      "key": "enter.cells",
+      "summary": "Stage tree only: the phase x situation cells a buy may start in. Elsewhere the buy waits, like a filter that fails.",
+      "title": "Buy in cells"
     },
     {
       "example": "burst and stage_sec <= 30 -> sell \"burst\".",

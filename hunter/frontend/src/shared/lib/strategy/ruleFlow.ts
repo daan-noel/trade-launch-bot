@@ -5,7 +5,7 @@
 
 import { formatDecimalTrim } from 'utils/format';
 import { entersOnArm, type Cond, type Deadline, type Line, type RuleDoc, type Stage } from './ruleDoc';
-import { condFace, stageNext } from './sentences';
+import { cellTitle, condFace, stageNext } from './sentences';
 
 export interface FlowRow {
   head: string;
@@ -49,6 +49,8 @@ export interface FlowSplit {
   sell: FlowBlock[];
   /** Buy again, after a sell. Absent when the rule does not buy again. */
   again: FlowBlock | null;
+  /** A stage tree's phases (each `until`) and situations (each `when`). Empty without a tree. */
+  tree: { phases: FlowBlock[]; situations: FlowBlock[] };
 }
 
 function live<T extends { off: boolean }>(xs: T[]): T[] {
@@ -164,6 +166,14 @@ export function flowSplit(doc: RuleDoc, watch = 'the fingerprint'): FlowSplit {
       if (block) buy.push(block);
     }
   }
+  if (doc.tree && doc.enter.cells.length) {
+    buy.push({
+      key: 'cells',
+      head: 'Only In Cells',
+      kind: 'gate',
+      pairs: doc.enter.cells.map(([p, s]) => [{ head: '', gate: '', text: cellTitle(p, s), depth: 0 }]),
+    });
+  }
 
   const signals: FlowBlock[] = [];
   for (const s of doc.signals) {
@@ -187,6 +197,19 @@ export function flowSplit(doc: RuleDoc, watch = 'the fingerprint'): FlowSplit {
     });
   }
   doc.stages.forEach((s, i) => sell.push(stageBlock(doc.stages, s, i)));
+  for (const c of doc.tree?.cells ?? []) {
+    const pairs = live(c.on).map((l) => lineRows(l, '', 0));
+    if (!pairs.length) pairs.push([{ head: '', gate: '', text: 'no line', dim: true, depth: 0 }]);
+    sell.push({ key: c.id, head: cellTitle(c.phase, c.situation), kind: 'stage', pairs });
+  }
+  const named = (key: string, head: string, conds: Cond[], rest: string): FlowBlock => {
+    const pairs = condPairs(conds);
+    return { key, head, kind: 'gate', pairs: pairs.length ? pairs : [[{ head: '', gate: '', text: rest, dim: true, depth: 0 }]] };
+  };
+  const tree = {
+    phases: (doc.tree?.phases ?? []).map((p) => named(p.id, p.name, p.until, 'to the end')),
+    situations: (doc.tree?.situations ?? []).map((s) => named(s.id, s.name, s.when, 'everything else')),
+  };
   if (!sell.length) {
     sell.push({
       key: 'none',
@@ -211,5 +234,5 @@ export function flowSplit(doc: RuleDoc, watch = 'the fingerprint'): FlowSplit {
         ]],
       }
     : null;
-  return { entry, buy, signals, sell, again };
+  return { entry, buy, signals, sell, again, tree };
 }

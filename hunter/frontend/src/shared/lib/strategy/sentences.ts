@@ -173,6 +173,15 @@ export function stageNext(stages: Stage[], i: number): string | null {
   return s.then ?? stages[i + 1]?.name ?? null;
 }
 
+/** A stage-tree cell entry by what it covers: `p4a x burst`, `burst, every phase`,
+ *  `p4a, every situation`, `every cell` (`null` = every one). */
+export function cellTitle(phase: string | null, situation: string | null): string {
+  if (phase != null && situation != null) return `${phase} x ${situation}`;
+  if (situation != null) return `${situation}, every phase`;
+  if (phase != null) return `${phase}, every situation`;
+  return 'every cell';
+}
+
 /** `early (ends when the coin is 20 s old) -> late -> ride (ends 30 s after this stage began)`. */
 export function stageStrip(stages: Stage[]): string {
   return stages

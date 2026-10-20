@@ -44,7 +44,7 @@ export interface FingerprintFormProps {
 }
 
 /** One shape as the operator is editing it: every listed axis must hold. */
-interface ShapeState {
+export interface ShapeState {
   /** React key — stable across edits, never sent. */
   key: number;
   /** Per-axis condition expression, as the operator typed it, in the axis's own
@@ -64,7 +64,7 @@ interface ShapeState {
 /** Which tokens the include side admits: every token, or only the shapes. */
 type MatchMode = 'all' | 'shapes';
 
-interface FormState {
+export interface FormState {
   name: string;
   /** `all` is the wildcard. Exclusive with include shapes (backend `validate` + the
    *  `fingerprints_wildcard_excludes_axes` CHECK), so the include list is hidden and
@@ -97,7 +97,8 @@ function shapeFromCriteria(criteria: Criteria = {}): ShapeState {
   };
 }
 
-function fromFingerprint(fp?: Fingerprint): FormState {
+/** Form state from a saved row — exported for the round-trip test. */
+export function fromFingerprint(fp?: Fingerprint): FormState {
   const include = fp?.wildcard ? [] : [fp?.criteria ?? {}, ...(fp?.alt_criteria ?? [])];
   return {
     name: fp?.name ?? '',
@@ -141,7 +142,8 @@ function shapeToCriteria(sh: ShapeState): { criteria: Criteria; badAxes: string[
 const includeLabel = (i: number) => (i < 26 ? String.fromCharCode(65 + i) : `#${i + 1}`);
 const excludeLabel = (i: number) => `X${i + 1}`;
 
-function toDraft(s: FormState): FingerprintDraft {
+/** The create/update body the form saves — exported for the round-trip test. */
+export function toDraft(s: FormState): FingerprintDraft {
   const wildcard = s.mode === 'all';
   const include = wildcard ? [] : s.include.map((sh) => shapeToCriteria(sh).criteria);
   return {
@@ -156,7 +158,7 @@ function toDraft(s: FormState): FingerprintDraft {
 
 /** Every reason the shapes cannot be saved, named by shape — mirrors the backend's
  *  `Fingerprint::problems`, so the form fails fast instead of on a 400. */
-function shapeProblems(s: FormState): string[] {
+export function shapeProblems(s: FormState): string[] {
   const out: string[] = [];
   const check = (sh: ShapeState, label: string) => {
     const { criteria, badAxes } = shapeToCriteria(sh);
@@ -228,8 +230,19 @@ const MATCH_HELP: HelpTip = {
     'Exclude shapes apply in both modes: a token matching ANY of them is skipped. A token whose value on an exclude axis is unknown is not skipped.',
 };
 
-const COPY_HELP =
-  'Pastes a COPY of that fingerprint\'s include shapes. Editing that fingerprint later never changes this one.';
+const COPY_INCLUDE_HELP =
+  'Pastes a COPY of that fingerprint: its include shapes here and its exclude shapes under Exclude, so the same coins match. Editing that fingerprint later never changes this one.';
+const COPY_EXCLUDE_HELP =
+  "Pastes a COPY of that fingerprint's include shapes as exclusions. Only fingerprints without exclusions of their own are listed: \"everything it matches except X\" cannot be written as a plain exclusion.";
+
+/** A shape with nothing typed — dropped when a copy lands in its list, so pasting
+ *  into a fresh form does not leave an empty shape that blocks saving. */
+const shapeIsBlank = (sh: ShapeState) =>
+  Object.values(sh.conditions).every((v) => (v ?? '').trim() === '') && sh.ix_labels.trim() === '';
+
+/** A fingerprint's include shapes, as editable cards. */
+const includeShapesOf = (f: Fingerprint): ShapeState[] =>
+  [f.criteria ?? {}, ...(f.alt_criteria ?? [])].map(shapeFromCriteria);
 
 /** One shape in the words the boxes show, or `null` when it configures nothing. */
 function shapeSentence(sh: ShapeState): string | null {
@@ -368,6 +381,8 @@ function ShapeList({
   shapes,
   label,
   onChange,
+  onCopy,
+  copyHelp,
   library,
   disabled,
 }: {
@@ -377,6 +392,10 @@ function ShapeList({
   shapes: ShapeState[];
   label: (i: number) => string;
   onChange: (next: ShapeState[]) => void;
+  /** Paste a copy of a library fingerprint — the parent decides where each of its
+   *  shape lists lands, because one source can feed both lists. */
+  onCopy: (src: Fingerprint) => void;
+  copyHelp: string;
   library: readonly Fingerprint[];
   disabled?: boolean;
 }) {
@@ -408,13 +427,11 @@ function ShapeList({
             className="w-auto max-w-[18rem]"
             value=""
             disabled={disabled}
-            title={COPY_HELP}
+            title={copyHelp}
             aria-label={`Copy shapes into ${title}`}
             onChange={(e) => {
               const src = library.find((f) => f.id === e.target.value);
-              if (!src) return;
-              const copied = [src.criteria ?? {}, ...(src.alt_criteria ?? [])].map(shapeFromCriteria);
-              onChange([...shapes, ...copied]);
+              if (src) onCopy(src);
             }}
           >
             <option value="">+ copy from fingerprint…</option>
@@ -457,6 +474,26 @@ export function FingerprintForm({
   const copySources = useMemo(
     () => library.filter((f) => !f.wildcard && f.id !== initial?.id && Object.keys(f.criteria ?? {}).length > 0),
     [library, initial?.id],
+  );
+
+  // Copy into Include: the source's include shapes here AND its exclude shapes under
+  // Exclude, so the copy matches the same coins.
+  const copyIntoInclude = (src: Fingerprint) =>
+    setS((p) => ({
+      ...p,
+      include: [...p.include.filter((sh) => !shapeIsBlank(sh)), ...includeShapesOf(src)],
+      exclude: [...p.exclude, ...(src.exclude_criteria ?? []).map(shapeFromCriteria)],
+    }));
+  // Copy into Exclude: the source's include shapes, and only a source without
+  // exclusions of its own (see `COPY_EXCLUDE_HELP`).
+  const copyIntoExclude = (src: Fingerprint) =>
+    setS((p) => ({
+      ...p,
+      exclude: [...p.exclude.filter((sh) => !shapeIsBlank(sh)), ...includeShapesOf(src)],
+    }));
+  const excludeCopySources = useMemo(
+    () => copySources.filter((f) => (f.exclude_criteria ?? []).length === 0),
+    [copySources],
   );
 
   // `ALL` is the auto-name of two different drafts: a wildcard (which really is
@@ -551,6 +588,8 @@ export function FingerprintForm({
               shapes={s.include}
               label={includeLabel}
               onChange={(v) => set('include', v)}
+              onCopy={copyIntoInclude}
+              copyHelp={COPY_INCLUDE_HELP}
               library={copySources}
               disabled={submitting}
             />
@@ -562,7 +601,9 @@ export function FingerprintForm({
             shapes={s.exclude}
             label={excludeLabel}
             onChange={(v) => set('exclude', v)}
-            library={copySources}
+            onCopy={copyIntoExclude}
+            copyHelp={COPY_EXCLUDE_HELP}
+            library={excludeCopySources}
             disabled={submitting}
           />
           <p className="text-[12px] leading-snug text-text-mid">{identitySentence(s)}</p>

@@ -31,6 +31,7 @@ import { patternRowKey } from 'lib/strategy/ixPatternRows';
 import { tagField, useStrategyRegistry } from 'lib/strategy/registry';
 import { toggleWorkingTemplate } from 'lib/strategy/templateGrain';
 import { tagNames, withTagShape } from 'lib/strategy/tagsDoc';
+import { fingerprintUpdateBody } from 'lib/strategy/types';
 import { defaultTagName, tagLabel } from 'lib/flow/tapeClassify';
 import { TagNameOptions } from 'components/strategy/TagKind';
 import { useUiToggle } from 'hooks/useUiPrefs';
@@ -713,15 +714,8 @@ function PromoteControls({
     try {
       await updateFingerprint({
         id: target.id,
-        body: {
-          name: target.name,
-          // The whole row round-trips: a PUT replaces it, so an omitted axis would
-          // silently WIDEN what this fingerprint matches, and `wildcard` omitted
-          // defaults to false, turning a match-everything row criterion-less.
-          criteria: target.criteria,
-          wildcard: target.wildcard,
-          tags: tags as Record<string, unknown>,
-        },
+        // Every identity field round-trips (see `fingerprintUpdateBody`).
+        body: fingerprintUpdateBody(target, { tags: tags as Record<string, unknown> }),
       }).unwrap();
       setStatus(`Added ${n} ${isTemplates ? 'id' : 'shape'}${n === 1 ? '' : 's'} to ${writes} on ${target.name}`);
     } catch (e) {

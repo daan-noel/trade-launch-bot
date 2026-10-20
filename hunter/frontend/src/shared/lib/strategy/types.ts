@@ -78,6 +78,25 @@ export function fingerprintIsMultiShape(
   return (fp.alt_criteria?.length ?? 0) > 0 || (fp.exclude_criteria?.length ?? 0) > 0;
 }
 
+/** The PUT body for a fingerprint that changes ONE thing — carries every identity
+ *  field of `fp` (criteria, both shape lists, wildcard) so a partial edit (a tag
+ *  save from Flow Discovery or the trader lens) cannot drop one and WIDEN what the
+ *  row matches. **Every caller that updates a row it did not build from the form
+ *  goes through here**, so a new identity field is added in one place. */
+export function fingerprintUpdateBody(
+  fp: Pick<Fingerprint, 'name' | 'wildcard' | 'criteria' | 'alt_criteria' | 'exclude_criteria' | 'tags'>,
+  patch: { tags?: Record<string, unknown> } = {},
+): FingerprintDraft {
+  return {
+    name: fp.name,
+    wildcard: fp.wildcard,
+    criteria: fp.criteria,
+    alt_criteria: fp.alt_criteria ?? [],
+    exclude_criteria: fp.exclude_criteria ?? [],
+    tags: patch.tags ?? fp.tags,
+  };
+}
+
 /** The create/update body for a fingerprint (lamports on the wire). `id`,
  *  `created_at`, `updated_at`, `used_by` are server-owned and never sent. */
 export type FingerprintDraft = Omit<

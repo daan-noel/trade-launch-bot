@@ -47,10 +47,15 @@ const FP_SORT_AXES: FpSortAxis[] = [
   },
 ];
 
-/** A fingerprint's configured label sequence, or `null` when the axis is unset. */
-function fpLabels(fp: Fingerprint | undefined): string[] | null {
-  const p = (fp?.criteria ?? {}).ix_labels;
-  return p?.kind === 'sequence' ? configuredIxLabels(p.labels) : null;
+/** Every INCLUDE shape's configured label sequence (an exclusion is what the
+ *  fingerprint rejects, so a pasted sequence does not select on it). Empty when the
+ *  axis is unset. */
+function fpLabelSets(fp: Fingerprint | undefined): string[][] {
+  return [fp?.criteria ?? {}, ...(fp?.alt_criteria ?? [])].flatMap((c) => {
+    const p = c.ix_labels;
+    const labels = p?.kind === 'sequence' ? configuredIxLabels(p.labels) : null;
+    return labels ? [labels] : [];
+  });
 }
 
 export type FingerprintRuleRow = { id: string; fingerprint_id: string };
@@ -95,7 +100,10 @@ export function buildFingerprintRuleColumns<R extends FingerprintRuleRow>(
     // full fingerprint search text (name / axes / pretty labels).
     filterMatch: (r, raw) => {
       if (isIxLabelJsonFilter(raw)) {
-        return ixLabelsMatchFilter(fpLabels(fpOf(r)), raw);
+        const sets = fpLabelSets(fpOf(r));
+        return sets.length === 0
+          ? ixLabelsMatchFilter(null, raw)
+          : sets.some((labels) => ixLabelsMatchFilter(labels, raw));
       }
       return fingerprintParamsSearchText(fpOf(r), r.fingerprint_id)
         .toLowerCase()

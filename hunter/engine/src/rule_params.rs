@@ -230,6 +230,47 @@ pub struct Stage {
     pub then: Option<&'static str>,
 }
 
+/// A stage-tree phase: where the coin is in its life. `until` (AND, on metrics that never
+/// fall) ends it; the last phase has none. The coin's phase is the number of leading phases
+/// whose `until` holds now, so it only moves forward and needs no stored state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Phase {
+    pub name: &'static str,
+    pub until: Vec<Cond>,
+}
+
+/// A stage-tree situation: what is happening now. The first whose `when` (AND) holds wins;
+/// the last has none and catches the rest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Situation {
+    pub name: &'static str,
+    pub when: Vec<Cond>,
+}
+
+/// The lines of the cells one entry covers. `None` = every phase / every situation. A cell
+/// takes the lines of the one most specific entry that covers it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cell {
+    pub phase: Option<&'static str>,
+    pub situation: Option<&'static str>,
+    pub on: Vec<Line>,
+}
+
+/// The held side as a grid of phase x situation cells instead of a stage list.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Tree {
+    pub phases: Vec<Phase>,
+    pub situations: Vec<Situation>,
+    pub cells: Vec<Cell>,
+}
+
+/// A cell by (phase, situation) name, `None` = every one.
+pub type CellRef = (Option<&'static str>, Option<&'static str>);
+
+/// Most phases, and most situations, one stage tree may have.
+pub const MAX_PHASES: usize = 16;
+pub const MAX_SITUATIONS: usize = 16;
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Enter {
     pub event: Vec<Cond>,
@@ -243,6 +284,9 @@ pub struct Enter {
     /// never revert, so this is how a real rule accepts the fill its study priced
     /// (a launch snipe behind its bundle fills at about 2.7x the trigger price).
     pub slippage_pct: Option<f64>,
+    /// Stage tree only: the (phase, situation) cells a buy may start in, `None` = any.
+    /// Empty = every cell.
+    pub cells: Vec<CellRef>,
 }
 
 /// Re-entry: after a normal sell (a line, TP or SL — never Dead / Manual / Migrated),
@@ -266,6 +310,8 @@ pub struct RuleParams {
     pub always: Vec<Line>,
     /// Empty = one implicit stage with no lines of its own.
     pub stages: Vec<Stage>,
+    /// A stage tree instead of `stages`.
+    pub tree: Option<Tree>,
     pub reentry: Option<ReEntry>,
     pub exclusive: bool,
     pub priority: i32,
@@ -424,10 +470,83 @@ fn parse_stage(v: &Value, at: &str, bag: bool) -> Result<Stage, String> {
     })
 }
 
+/// A phase or situation name in a cell, `*` = every one.
+fn cell_name(v: Option<&Value>, at: &str) -> Result<Option<&'static str>, String> {
+    let v = v.ok_or_else(|| format!("{at} is missing (a name or \"*\")"))?;
+    if v.as_str() == Some("*") {
+        return Ok(None);
+    }
+    name(v, at).map(Some)
+}
+
+fn parse_tree(root: &Map<String, Value>) -> Result<Option<Tree>, String> {
+    let (Some(ph), Some(si)) = (root.get("phases"), root.get("situations")) else {
+        if root.contains_key("phases") || root.contains_key("situations") || root.contains_key("cells") {
+            return Err("a stage tree needs both `phases` and `situations`".into());
+        }
+        return Ok(None);
+    };
+    let phases = arr(ph, "phases")?
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let at = format!("phases[{i}]");
+            let o = obj(v, &at)?;
+            unknown_keys(o, &["name", "until"], &at)?;
+            let name = name(o.get("name").ok_or_else(|| format!("{at} needs a name"))?, &format!("{at}.name"))?;
+            Ok(Phase { name, until: parse_conds(o.get("until"), &format!("phase `{name}`.until"))? })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let situations = arr(si, "situations")?
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let at = format!("situations[{i}]");
+            let o = obj(v, &at)?;
+            unknown_keys(o, &["name", "when"], &at)?;
+            let name = name(o.get("name").ok_or_else(|| format!("{at} needs a name"))?, &format!("{at}.name"))?;
+            Ok(Situation { name, when: parse_conds(o.get("when"), &format!("situation `{name}`.when"))? })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let cells = match root.get("cells") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(c) => arr(c, "cells")?
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let at = format!("cells[{i}]");
+                let o = obj(v, &at)?;
+                unknown_keys(o, &["phase", "situation", "on"], &at)?;
+                Ok(Cell {
+                    phase: cell_name(o.get("phase"), &format!("{at}.phase"))?,
+                    situation: cell_name(o.get("situation"), &format!("{at}.situation"))?,
+                    on: parse_lines(o.get("on"), &format!("{at}.on"), false)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+    };
+    Ok(Some(Tree { phases, situations, cells }))
+}
+
+fn parse_enter_cells(v: Option<&Value>) -> Result<Vec<CellRef>, String> {
+    let Some(v) = v else { return Ok(Vec::new()) };
+    arr(v, "enter.cells")?
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let at = format!("enter.cells[{i}]");
+            match c.as_array().map(Vec::as_slice) {
+                Some([p, s]) => Ok((cell_name(Some(p), &format!("{at}[0]"))?, cell_name(Some(s), &format!("{at}[1]"))?)),
+                _ => Err(format!("{at} must be [phase, situation]")),
+            }
+        })
+        .collect()
+}
+
 fn parse_enter(v: Option<&Value>) -> Result<Enter, String> {
     let Some(v) = v else { return Ok(Enter::default()) };
     let o = obj(v, "enter")?;
-    unknown_keys(o, &["event", "filters", "final_filters", "lock", "size_pct_of_pool", "slippage_pct"], "enter")?;
+    unknown_keys(o, &["event", "filters", "final_filters", "lock", "size_pct_of_pool", "slippage_pct", "cells"], "enter")?;
     Ok(Enter {
         event: parse_conds(o.get("event"), "enter.event")?,
         filters: parse_conds(o.get("filters"), "enter.filters")?,
@@ -439,6 +558,7 @@ fn parse_enter(v: Option<&Value>) -> Result<Enter, String> {
             .filter(|v| !v.is_null())
             .map(|v| num(v, "enter.slippage_pct"))
             .transpose()?,
+        cells: parse_enter_cells(o.get("cells"))?,
     })
 }
 
@@ -468,6 +588,9 @@ impl RuleParams {
             "signals",
             "always",
             "stages",
+            "phases",
+            "situations",
+            "cells",
             "reentry",
             "exclusive",
             "priority",
@@ -521,6 +644,7 @@ impl RuleParams {
                     .map(|(i, st)| parse_stage(st, &format!("stages[{i}]"), bag))
                     .collect::<Result<_, _>>()?,
             },
+            tree: parse_tree(root)?,
             reentry,
             exclusive: match root.get("exclusive") {
                 None | Some(Value::Null) => false,
@@ -680,7 +804,123 @@ impl RuleParams {
                 return Err(format!("stage `{}` ends but no stage follows it: add `then`", s.name));
             }
         }
+        if let Some(t) = &self.tree {
+            self.check_tree(t, &check_line, &signal_ok)?;
+        } else if !self.enter.cells.is_empty() {
+            return Err("enter.cells needs a stage tree (`phases` and `situations`)".into());
+        }
         self.check_deadline_loops()
+    }
+
+    /// A stage tree's own rules: one-way phases on metrics that never fall, a catch-all
+    /// last phase and situation, cells that name what exists and say which entry wins.
+    fn check_tree(
+        &self,
+        t: &Tree,
+        check_line: &dyn Fn(&Line, &str, bool) -> Result<(), String>,
+        signal_ok: &dyn Fn(&Cond, &str, bool) -> Result<(), String>,
+    ) -> Result<(), String> {
+        use crate::metrics::evaluator::Operator;
+        if !self.stages.is_empty() {
+            return Err("a rule has `stages` or a stage tree (`phases`), not both".into());
+        }
+        if t.phases.is_empty() || t.situations.is_empty() {
+            return Err("a stage tree needs at least one phase and one situation".into());
+        }
+        if t.phases.len() > MAX_PHASES || t.situations.len() > MAX_SITUATIONS {
+            return Err(format!("a stage tree has at most {MAX_PHASES} phases and {MAX_SITUATIONS} situations"));
+        }
+        let unique = |names: Vec<&'static str>, what: &str| -> Result<(), String> {
+            let mut seen = std::collections::BTreeSet::new();
+            match names.into_iter().find(|n| !seen.insert(*n)) {
+                Some(n) => Err(format!("two {what} are named `{n}`")),
+                None => Ok(()),
+            }
+        };
+        unique(t.phases.iter().map(|p| p.name).collect(), "phases")?;
+        unique(t.situations.iter().map(|s| s.name).collect(), "situations")?;
+        let live = |conds: &[Cond]| conds.iter().any(|c| !c.is_off());
+        for (i, p) in t.phases.iter().enumerate() {
+            let at = format!("phase `{}`", p.name);
+            let last = i + 1 == t.phases.len();
+            if last && live(&p.until) {
+                return Err(format!("{at} is the last phase: it has no `until`"));
+            }
+            if !last && !live(&p.until) {
+                return Err(format!("{at} needs an `until`: the conditions that end it"));
+            }
+            for c in &p.until {
+                let Cond::Metric { r, is, .. } = c else {
+                    return Err(format!("{at}.until: metric conditions only"));
+                };
+                if r.is_position() || !r.is_monotonic() {
+                    return Err(format!(
+                        "{at}.until: {} can fall, so a passed phase could come back; use a metric that never falls (m_state.age_sec, m_state.peak_liquidity_sol, a count over the life)",
+                        r.label()
+                    ));
+                }
+                if is.iter().flatten().any(|c| !matches!(c.operator, Operator::Gt | Operator::Gte)) {
+                    return Err(format!("{at}.until: use > or >=, a phase ends when the metric reaches a value"));
+                }
+            }
+        }
+        for (i, s) in t.situations.iter().enumerate() {
+            let at = format!("situation `{}`", s.name);
+            let last = i + 1 == t.situations.len();
+            if last && live(&s.when) {
+                return Err(format!("{at} is the last situation: it has no `when`, it catches the rest"));
+            }
+            if !last && !live(&s.when) {
+                return Err(format!("{at} needs a `when`; only the last situation catches the rest"));
+            }
+            for c in &s.when {
+                signal_ok(c, &format!("{at}.when"), false)?;
+            }
+        }
+        let phase_ok = |n: Option<&'static str>, at: &str| match n {
+            Some(n) if !t.phases.iter().any(|p| p.name == n) => Err(format!("{at}: no phase `{n}`")),
+            _ => Ok(()),
+        };
+        let situation_ok = |n: Option<&'static str>, at: &str| match n {
+            Some(n) if !t.situations.iter().any(|s| s.name == n) => Err(format!("{at}: no situation `{n}`")),
+            _ => Ok(()),
+        };
+        let mut covered = std::collections::BTreeSet::new();
+        for (i, c) in t.cells.iter().enumerate() {
+            let at = format!("cells[{i}]");
+            phase_ok(c.phase, &at)?;
+            situation_ok(c.situation, &at)?;
+            if !covered.insert((c.phase, c.situation)) {
+                return Err(format!("{at}: a second entry for {} x {}", c.phase.unwrap_or("*"), c.situation.unwrap_or("*")));
+            }
+            for (j, l) in c.on.iter().enumerate() {
+                let at = format!("{at}.on[{j}]");
+                if l.go.is_some() {
+                    return Err(format!("{at}: a cell has no `go`, the coin moves by its phase and situation"));
+                }
+                if l.sell.is_some_and(|s| s.pct.is_some()) {
+                    return Err(format!("{at}: a part sell in a cell would sell again on the next print"));
+                }
+                check_line(l, &at, true)?;
+            }
+        }
+        for p in &t.phases {
+            for s in &t.situations {
+                let has = |ph: Option<&'static str>, si: Option<&'static str>| covered.contains(&(ph, si));
+                if !has(Some(p.name), Some(s.name)) && has(Some(p.name), None) && has(None, Some(s.name)) {
+                    return Err(format!(
+                        "cell {} x {} is covered by both `{} x *` and `* x {}`: add an entry for {} x {} so it is clear which lines it runs",
+                        p.name, s.name, p.name, s.name, p.name, s.name
+                    ));
+                }
+            }
+        }
+        for (i, (p, s)) in self.enter.cells.iter().enumerate() {
+            let at = format!("enter.cells[{i}]");
+            phase_ok(*p, &at)?;
+            situation_ok(*s, &at)?;
+        }
+        Ok(())
     }
 
     /// A loop of deadline moves must wait somewhere. An `age_sec` / `held_sec` deadline
@@ -753,6 +993,10 @@ impl RuleParams {
         if let Some(s) = e.slippage_pct {
             enter.insert("slippage_pct".into(), json!(s));
         }
+        if !e.cells.is_empty() {
+            let star = |n: Option<&str>| json!(n.unwrap_or("*"));
+            enter.insert("cells".into(), Value::Array(e.cells.iter().map(|(p, s)| json!([star(*p), star(*s)])).collect()));
+        }
         if !enter.is_empty() {
             root.insert("enter".into(), Value::Object(enter));
         }
@@ -775,6 +1019,26 @@ impl RuleParams {
         }
         if !self.stages.is_empty() {
             root.insert("stages".into(), Value::Array(self.stages.iter().map(stage_to_value).collect()));
+        }
+        if let Some(t) = &self.tree {
+            let named = |n: &str, key: &str, conds: &[Cond]| {
+                let mut o = Map::new();
+                o.insert("name".into(), json!(n));
+                if !conds.is_empty() {
+                    o.insert(key.into(), conds_to_value(conds));
+                }
+                Value::Object(o)
+            };
+            root.insert("phases".into(), Value::Array(t.phases.iter().map(|p| named(p.name, "until", &p.until)).collect()));
+            root.insert("situations".into(), Value::Array(t.situations.iter().map(|s| named(s.name, "when", &s.when)).collect()));
+            if !t.cells.is_empty() {
+                let cells = t
+                    .cells
+                    .iter()
+                    .map(|c| json!({ "phase": c.phase.unwrap_or("*"), "situation": c.situation.unwrap_or("*"), "on": lines_to_value(&c.on) }))
+                    .collect();
+                root.insert("cells".into(), Value::Array(cells));
+            }
         }
         if let Some(r) = self.reentry {
             root.insert("reentry".into(), json!({ "cooldown_sec": r.cooldown_sec, "max_per_coin": r.max_per_coin }));
@@ -823,6 +1087,14 @@ impl RuleParams {
         for g in self.signals.values().flatten() {
             take(g);
         }
+        if let Some(t) = &self.tree {
+            for p in &t.phases {
+                take(&p.until);
+            }
+            for s in &t.situations {
+                take(&s.when);
+            }
+        }
         for l in self.all_lines() {
             if !l.off {
                 take(&l.when);
@@ -831,9 +1103,12 @@ impl RuleParams {
         out
     }
 
-    /// Every line: `always`, then each stage's `on` and `at_end`.
+    /// Every line: `always`, then each stage's `on` and `at_end`, then each tree cell's.
     pub fn all_lines(&self) -> impl Iterator<Item = &Line> {
-        self.always.iter().chain(self.stages.iter().flat_map(|s| s.on.iter().chain(s.at_end.iter())))
+        self.always
+            .iter()
+            .chain(self.stages.iter().flat_map(|s| s.on.iter().chain(s.at_end.iter())))
+            .chain(self.tree.iter().flat_map(|t| t.cells.iter().flat_map(|c| c.on.iter())))
     }
 
     /// The episode a copy rule runs. A non-copy rule returns itself. A document

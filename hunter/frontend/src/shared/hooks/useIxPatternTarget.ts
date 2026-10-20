@@ -15,7 +15,7 @@ import {
   type IxPatternRow,
 } from 'lib/strategy/ixPatternRows';
 import { tagNames, withTagListValue, withTagShape } from 'lib/strategy/tagsDoc';
-import type { Fingerprint } from 'lib/strategy/types';
+import { fingerprintUpdateBody, type Fingerprint } from 'lib/strategy/types';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
   useGetFingerprintsQuery,
@@ -350,15 +350,8 @@ export function useIxPatternTarget({
       // badges and the metric panes all redraw from the row just written.
       void updateFingerprint({
         id: target.id,
-        body: {
-          name: target.name,
-          // The whole row round-trips: a PUT replaces it, so an omitted axis would
-          // silently WIDEN what this fingerprint matches, and `wildcard` omitted
-          // defaults to false, which the write edge rejects as criterion-less.
-          criteria: target.criteria,
-          wildcard: target.wildcard,
-          tags,
-        },
+        // Every identity field round-trips (see `fingerprintUpdateBody`).
+        body: fingerprintUpdateBody(target, { tags }),
       })
         .unwrap()
         .catch((e) => setError(apiErrorMessage(e as never, `Failed to save tag ${tagName}`)));

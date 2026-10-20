@@ -12,6 +12,11 @@
 //! `then`, else its `on` lines. The first line that holds acts. A move takes effect from
 //! the next print or tick; a partial sell moves when its fill lands.
 //!
+//! **A stage tree** ([`CompiledTree`]) replaces the stage list: on every step the coin's
+//! phase (how many leading `until`s hold) and situation (the first `when` that holds) pick
+//! one cell, and that cell's lines run after `always`, on the same print. Nothing about the
+//! cell is stored: both are read from the coin each step, before and after the buy alike.
+//!
 //! **One condition walk, two sources.** Every decision reads the coin through
 //! [`CoinReads`]: the live fold's [`TokenTrack`], or one row of the lab sweep's
 //! precomputed series. The walk is generic, so a sweep scan decides exactly as the fold
@@ -179,6 +184,36 @@ impl CompiledLine {
 
     pub fn idle_in(&self, stage: u8) -> bool {
         self.go == Some(stage) && !self.sells_whole()
+    }
+}
+
+/// A compiled stage tree. Cell `c = phase * situations + situation`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledTree {
+    pub phase_names: Vec<&'static str>,
+    pub situation_names: Vec<&'static str>,
+    /// The `until` of every phase but the last.
+    pub untils: Vec<Vec<CondReq>>,
+    /// The `when` of every situation but the last.
+    pub whens: Vec<Vec<CondReq>>,
+    /// The lines of each authored cell entry.
+    pub entries: Vec<Vec<CompiledLine>>,
+    /// Per cell: the most specific entry covering it.
+    pub cell_entry: Vec<Option<u16>>,
+    /// Per cell: a buy may start there.
+    pub entry_ok: Vec<bool>,
+}
+
+impl CompiledTree {
+    /// The lines cell `cell` runs.
+    pub fn lines(&self, cell: usize) -> &[CompiledLine] {
+        self.cell_entry.get(cell).copied().flatten().map_or(&[], |e| self.entries[usize::from(e)].as_slice())
+    }
+
+    /// `(phase, situation)` names of cell `cell`.
+    pub fn cell_names(&self, cell: usize) -> (&'static str, &'static str) {
+        let n = self.situation_names.len();
+        (self.phase_names[cell / n], self.situation_names[cell % n])
     }
 }
 
@@ -408,6 +443,9 @@ pub struct CompiledRule {
     pub always: Vec<CompiledLine>,
     /// At least one stage (an implicit empty one when none is authored).
     pub stages: Vec<CompiledStage>,
+    /// A stage tree: the position stays in the one implicit stage, and each step runs the
+    /// lines of the coin's current cell.
+    pub tree: Option<CompiledTree>,
     /// Every buffer the conditions read.
     pub buffers: Buffers,
     /// Every distinct coin-side read, indexed by [`MetricReq::read_id`] — the columns a
@@ -611,11 +649,49 @@ impl CompiledRule {
         if stages.is_empty() {
             stages.push(CompiledStage { name: "main", ends: None, on: Vec::new(), at_end: Vec::new(), then: None });
         }
+        let tree = p.tree.as_ref().map(|t| {
+            let untils: Vec<Vec<CondReq>> = t.phases.iter().take(t.phases.len().saturating_sub(1)).map(|ph| cx.conds(&ph.until)).collect();
+            let whens: Vec<Vec<CondReq>> =
+                t.situations.iter().take(t.situations.len().saturating_sub(1)).map(|si| cx.conds(&si.when)).collect();
+            let entries: Vec<Vec<CompiledLine>> = t.cells.iter().map(|c| cx.lines(&c.on, &p.signals)).collect();
+            let (np, ns) = (t.phases.len(), t.situations.len());
+            let find = |ph: Option<&str>, si: Option<&str>| {
+                t.cells.iter().position(|c| c.phase == ph && c.situation == si).map(|i| i as u16)
+            };
+            let mut cell_entry = Vec::with_capacity(np * ns);
+            let mut entry_ok = Vec::with_capacity(np * ns);
+            for ph in &t.phases {
+                for si in &t.situations {
+                    // Validation refuses a cell both `P x *` and `* x S` cover without its
+                    // own entry, so at most one of the two middle rungs exists.
+                    cell_entry.push(
+                        find(Some(ph.name), Some(si.name))
+                            .or_else(|| find(Some(ph.name), None))
+                            .or_else(|| find(None, Some(si.name)))
+                            .or_else(|| find(None, None)),
+                    );
+                    entry_ok.push(
+                        p.enter.cells.is_empty()
+                            || p.enter.cells.iter().any(|(cp, cs)| cp.is_none_or(|n| n == ph.name) && cs.is_none_or(|n| n == si.name)),
+                    );
+                }
+            }
+            CompiledTree {
+                phase_names: t.phases.iter().map(|ph| ph.name).collect(),
+                situation_names: t.situations.iter().map(|si| si.name).collect(),
+                untils,
+                whens,
+                entries,
+                cell_entry,
+                entry_ok,
+            }
+        });
         // One bool so an in-flight buy that cannot sell on a print does not walk
         // its lines on every trade of that coin.
         let print_exit = always
             .iter()
             .chain(stages.iter().flat_map(|s| s.on.iter()))
+            .chain(tree.iter().flat_map(|t| t.entries.iter().flatten()))
             .any(|l| l.reads_print && l.sell.is_some());
         // Every metric condition anywhere: buffers + clock horizons.
         let mut buffers = Buffers::default();
@@ -623,7 +699,9 @@ impl CompiledRule {
         let line_conds = always
             .iter()
             .chain(stages.iter().flat_map(|s| s.on.iter().chain(s.at_end.iter())))
-            .flat_map(|l| l.conds.iter());
+            .chain(tree.iter().flat_map(|t| t.entries.iter().flatten()))
+            .flat_map(|l| l.conds.iter())
+            .chain(tree.iter().flat_map(|t| t.untils.iter().chain(t.whens.iter()).flatten()));
         let all_metric = event
             .iter()
             .chain(filters.iter())
@@ -677,6 +755,7 @@ impl CompiledRule {
             signals,
             always,
             stages,
+            tree,
             buffers,
             coin_reads: cx.coin_reads,
             mono_kills,
@@ -726,6 +805,33 @@ impl CompiledRule {
         self.all_hold(&self.final_filters, reads, None, now)
     }
 
+    /// The coin's stage-tree cell at `now`: its phase (how many leading `until`s hold) and
+    /// its situation (the first `when` that holds, else the last). `pos` is our position,
+    /// `None` before the buy (a situation on it then does not hold). `None` without a tree.
+    pub fn tree_cell<R: CoinReads + ?Sized>(&self, reads: &R, pos: Option<&PositionCtx>, now: Ts) -> Option<usize> {
+        let t = self.tree.as_ref()?;
+        let phase = t.untils.iter().take_while(|u| self.all_hold(u, reads, None, now)).count();
+        let situation = t.whens.iter().position(|w| self.all_hold(w, reads, pos, now)).unwrap_or(t.whens.len());
+        Some(phase * t.situation_names.len() + situation)
+    }
+
+    /// A buy may start in the coin's current cell (always, without a tree).
+    pub fn entry_cell_ok<R: CoinReads + ?Sized>(&self, reads: &R, now: Ts) -> bool {
+        match (&self.tree, self.tree_cell(reads, None, now)) {
+            (Some(t), Some(cell)) => t.entry_ok[cell],
+            _ => true,
+        }
+    }
+
+    /// The lines that could act right after a buy, besides `always`: the first stage's
+    /// `on`, or the current cell's in a tree.
+    fn first_lines<R: CoinReads + ?Sized>(&self, reads: &R, now: Ts) -> &[CompiledLine] {
+        match (&self.tree, self.tree_cell(reads, None, now)) {
+            (Some(t), Some(cell)) => t.lines(cell),
+            _ => &self.stages[0].on,
+        }
+    }
+
     /// **The pre-entry veto**: a sell line that could act right after a buy — an
     /// `always` sell line or a sell line of the first stage — already holds on the coin
     /// (position metrics read `NaN` here, so a line on our position never vetoes).
@@ -733,7 +839,7 @@ impl CompiledRule {
     pub fn sell_line_holding_before_entry<R: CoinReads + ?Sized>(&self, reads: &R, now: Ts) -> Option<ExitReason> {
         self.always
             .iter()
-            .chain(self.stages[0].on.iter())
+            .chain(self.first_lines(reads, now).iter())
             .filter(|l| !l.idle_in(0))
             .filter_map(|l| l.sell.map(|s| (l, s)))
             .find(|(l, _)| self.line_holds(l, reads, None, now))
@@ -746,6 +852,7 @@ impl CompiledRule {
         self.event_satisfied(reads, now)
             && self.final_filters_satisfied(reads, now)
             && self.filters_satisfied(reads, now)
+            && self.entry_cell_ok(reads, now)
             && self.sell_line_holding_before_entry(reads, now).is_none()
     }
 
@@ -759,7 +866,8 @@ impl CompiledRule {
     ///   a filter failure spends the slot, a final-filter failure ends the coin.
     pub fn try_enter<R: CoinReads + ?Sized>(&self, reads: &R, now: Ts, locked_slot: Option<u64>, on_print: bool) -> EntryVerdict {
         let final_ok = self.final_filters_satisfied(reads, now);
-        let rest_ok = self.filters_satisfied(reads, now);
+        // A buy outside the tree's entry cells waits, like a failed filter.
+        let rest_ok = self.filters_satisfied(reads, now) && self.entry_cell_ok(reads, now);
         let veto = self.sell_line_holding_before_entry(reads, now).is_some();
         let would_enter = final_ok && rest_ok && !veto;
         // A final-filter failure on a print that would otherwise buy ends the coin; a
@@ -923,11 +1031,11 @@ impl CompiledRule {
             }
             !l.idle_in(stage) && self.line_holds(l, reads, None, now)
         };
-        let line = self
-            .always
-            .iter()
-            .chain(self.stages.get(usize::from(stage)).into_iter().flat_map(|s| s.on.iter()))
-            .find(acts)?;
+        let staged: &[CompiledLine] = match (&self.tree, self.tree_cell(reads, None, now)) {
+            (Some(t), Some(cell)) => t.lines(cell),
+            _ => self.stages.get(usize::from(stage)).map_or(&[], |s| s.on.as_slice()),
+        };
+        let line = self.always.iter().chain(staged.iter()).find(acts)?;
         match Self::act(line, reads, None, now) {
             sell @ HeldAction::Sell { .. } => Some(sell),
             _ => None,
@@ -957,6 +1065,9 @@ impl CompiledRule {
         if let Some(l) = self.always.iter().find(acts) {
             return HeldStep::Line(l);
         }
+        if let (Some(t), Some(cell)) = (&self.tree, self.tree_cell(reads, Some(pos), now)) {
+            return t.lines(cell).iter().find(acts).map_or(HeldStep::None, HeldStep::Line);
+        }
         let Some(current) = self.stages.get(usize::from(stage)) else { return HeldStep::None };
         if self.deadline_reached(current, reads, pos, now) {
             if let Some(l) = current.at_end.iter().find(acts) {
@@ -969,7 +1080,10 @@ impl CompiledRule {
 
     /// Every held line in [`CompiledLine::index`] order.
     pub fn held_lines(&self) -> impl Iterator<Item = &CompiledLine> {
-        self.always.iter().chain(self.stages.iter().flat_map(|s| s.on.iter().chain(s.at_end.iter())))
+        self.always
+            .iter()
+            .chain(self.stages.iter().flat_map(|s| s.on.iter().chain(s.at_end.iter())))
+            .chain(self.tree.iter().flat_map(|t| t.entries.iter().flatten()))
     }
 
     /// `act` for a caller holding a [`HeldStep::Line`].
@@ -984,7 +1098,9 @@ impl CompiledRule {
             .always
             .iter()
             .chain(self.stages.iter().flat_map(|s| s.on.iter().chain(s.at_end.iter())))
-            .flat_map(|l| l.conds.iter());
+            .chain(self.tree.iter().flat_map(|t| t.entries.iter().flatten()))
+            .flat_map(|l| l.conds.iter())
+            .chain(self.tree.iter().flat_map(|t| t.untils.iter().chain(t.whens.iter()).flatten()));
         self.event
             .iter()
             .chain(self.final_filters.iter())

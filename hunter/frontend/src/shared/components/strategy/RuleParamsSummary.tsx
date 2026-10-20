@@ -161,15 +161,61 @@ function ChainGlance({ doc }: { doc: RuleDoc }) {
   );
 }
 
+/** A stage tree: each phase's until, each situation's when, the buy cells, then each
+ *  cell entry's lines. */
+function TreeRows({ doc }: { doc: RuleDoc }) {
+  const t = doc.tree!;
+  const cellName = (p: string | null, s: string | null) => `${p ?? '*'} x ${s ?? '*'}`;
+  return (
+    <>
+      {t.phases.map((p) => (
+        <div key={p.id} className="flex flex-wrap items-center gap-1">
+          {chip(p.name, 'text-accent', undefined, 'phase')}
+          {p.until.length > 0 ? (
+            <>
+              <span className="text-[9px] font-bold uppercase text-text-dim">until</span>
+              <Conds conds={p.until} />
+            </>
+          ) : (
+            <span className="text-[10px] text-text-dim">to the end</span>
+          )}
+        </div>
+      ))}
+      {t.situations.map((s) => (
+        <div key={s.id} className="flex flex-wrap items-center gap-1">
+          {chip(s.name, undefined, { color: ROLE.stage }, 'situation')}
+          {s.when.length > 0 ? (
+            <>
+              <span className="text-[9px] font-bold uppercase text-text-dim">when</span>
+              <Conds conds={s.when} />
+            </>
+          ) : (
+            <span className="text-[10px] text-text-dim">the rest</span>
+          )}
+        </div>
+      ))}
+      {doc.enter.cells.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-[9px] font-bold uppercase text-buy">buy in</span>
+          {doc.enter.cells.map(([p, s], i) => (
+            <Fragment key={i}>{chip(cellName(p, s), 'text-buy')}</Fragment>
+          ))}
+        </div>
+      )}
+      {t.cells.map((c) => c.on.map((l) => <LineRow key={l.id} l={l} tag={cellName(c.phase, c.situation)} />))}
+    </>
+  );
+}
+
 /** Compact summary for a rule's / combo's `params`: one row per buy part, then one
- *  row per sell line (`always`, then each stage). */
+ *  row per sell line (`always`, then each stage or tree cell). */
 export function ruleParamsCell(raw: unknown): ReactNode {
   const p = parse(raw);
   if ('error' in p) return chip('format-1 params', 'text-text-dim', undefined, p.error);
   const { doc } = p;
   const head = headline(doc);
   const e = doc.enter;
-  const empty = !head.length && !e.event.length && !e.filters.length && !e.final_filters.length && !doc.always.length && !doc.stages.length;
+  const empty = !head.length && !e.event.length && !e.filters.length && !e.final_filters.length && !doc.always.length && !doc.stages.length && !doc.tree;
   return (
     <div className="flex flex-col items-start gap-1 text-left">
       {head.length > 0 && (
@@ -210,6 +256,7 @@ export function ruleParamsCell(raw: unknown): ReactNode {
           ))}
         </Fragment>
       ))}
+      {doc.tree && <TreeRows doc={doc} />}
       {empty && chip('fingerprint only', 'text-text-dim')}
     </div>
   );
@@ -235,6 +282,11 @@ export function ruleParamsSearchText(raw: unknown): string {
   for (const s of doc.stages) {
     parts.push(s.name);
     for (const l of [...s.on, ...s.at_end]) parts.push(...conds(l.if), lineExitLabel(l));
+  }
+  if (doc.tree) {
+    for (const p of doc.tree.phases) parts.push(p.name, ...conds(p.until));
+    for (const s of doc.tree.situations) parts.push(s.name, ...conds(s.when));
+    for (const c of doc.tree.cells) for (const l of c.on) parts.push(...conds(l.if), lineExitLabel(l));
   }
   return parts.length ? parts.join(' ') : 'fingerprint only';
 }

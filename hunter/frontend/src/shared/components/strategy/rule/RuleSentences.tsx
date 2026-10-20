@@ -15,6 +15,7 @@ import { familyName, findFamily, findMetric, type StrategyRegistry } from 'lib/s
 import { flowSplit, type FlowBlock, type FlowRow } from 'lib/strategy/ruleFlow';
 import type { RuleDoc } from 'lib/strategy/ruleDoc';
 import { CaseMark, FamilyMark, StageMark, StepMark } from './MetricMark';
+import { TreeGrid } from './TreeEditor';
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -315,6 +316,45 @@ function BlockStrip({
   );
 }
 
+/** One axis of a stage tree: its names in order, each with the conditions that pick it. */
+function TreeAxis({
+  title,
+  hint,
+  color,
+  blocks,
+  ...flow
+}: {
+  title: string;
+  hint: string;
+  color: string;
+  blocks: FlowBlock[];
+  reg: StrategyRegistry;
+  stages: string[];
+  signals: Set<string>;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5 rounded-md border px-2 py-1.5" style={{ borderColor: color, backgroundColor: wash(color, 4) }}>
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="text-[11px] font-semibold tracking-wide" style={{ color }}>
+          {title}
+        </span>
+        <span className="text-[11px] text-text-dim">{hint}</span>
+      </div>
+      <div className="flex flex-col gap-1 overflow-x-auto">
+        {blocks.map((b, i) => (
+          <div key={b.key} className="flex items-start gap-2">
+            <span className="w-4 shrink-0 pt-0.5 text-right text-[11px] tabular-nums text-text-dim">{i + 1}</span>
+            <span className="w-24 shrink-0 truncate pt-0.5 font-mono text-[11px] font-semibold" style={{ color }}>
+              {b.head}
+            </span>
+            <SellBlock block={{ ...b, head: '' }} {...flow} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function RuleSentences({ doc, reg, watch }: { doc: RuleDoc; reg: StrategyRegistry; /** Fingerprint name on the WATCH row. */ watch?: string }) {
   const split = flowSplit(doc, watch);
   const stages = doc.stages.map((s) => s.name);
@@ -383,7 +423,7 @@ export function RuleSentences({ doc, reg, watch }: { doc: RuleDoc; reg: Strategy
                   className="w-full rounded px-2 py-0.5 text-[11px] font-semibold tracking-wide"
                   style={{ color: ROLE.stage, backgroundColor: wash(ROLE.stage, 16) }}
                 >
-                  STAGES
+                  {doc.tree ? 'CELLS' : 'STAGES'}
                 </div>
                 <BlockStrip blocks={sellStages} bookends {...flow} />
               </div>
@@ -396,6 +436,16 @@ export function RuleSentences({ doc, reg, watch }: { doc: RuleDoc; reg: Strategy
           </div>
         )}
       </div>
+      {doc.tree && (
+        <div className="flex flex-col gap-3 rounded-lg border border-white/15 bg-bg-card px-3 py-2">
+          <StepMark name="STAGE TREE" />
+          <div className="grid gap-3 lg:grid-cols-2">
+            <TreeAxis title="PHASES" hint="when in its life, moves forward only: until ends it" color={ROLE.stage} blocks={split.tree.phases} {...flow} />
+            <TreeAxis title="SITUATIONS" hint="what happens now, checked top to bottom: the first whose when holds" color={ROLE.situation} blocks={split.tree.situations} {...flow} />
+          </div>
+          <TreeGrid doc={doc} reg={reg} />
+        </div>
+      )}
     </div>
   );
 }

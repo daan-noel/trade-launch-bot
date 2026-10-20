@@ -132,6 +132,7 @@ export function sellChips(doc: RuleDoc, forEditor = false, editing: string | nul
     out.push({ key: 'always', label: 'Always' });
   }
   for (const s of doc.stages) out.push({ key: `stage:${s.id}`, label: s.name });
+  if (doc.tree) out.push({ key: 'tree', label: `Stage tree ${doc.tree.phases.length}x${doc.tree.situations.length}` });
   return out;
 }
 

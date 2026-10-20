@@ -7,13 +7,16 @@
 // says what to change.
 
 import type { Condition, ConditionExpr } from './grammar';
-import { checkRef } from './metricRef';
+import { checkRef, parseSpan } from './metricRef';
 import { findMetric, type StrategyRegistry } from './registry';
+import { cellTitle } from './sentences';
 import {
   MAX_SELL_PCT,
   MAX_ENTRY_SLIPPAGE_PCT,
   MAX_SIZE_PCT_OF_POOL,
   MAX_STAGES,
+  MAX_PHASES,
+  MAX_SITUATIONS,
   type Cond,
   type Line,
   type RuleDoc,
@@ -181,6 +184,8 @@ export function validateRuleDoc(
       errors.push(`${at} has a deadline but no stage follows it: pick where it goes next`);
     }
   });
+  if (d.tree) checkTree(d, reg, checkConds, checkLine, errors);
+  else if (d.enter.cells.length) errors.push('Buy in cells needs a stage tree');
   const loop = deadlineLoopWithoutWait(d.stages);
   if (loop) {
     errors.push(
@@ -188,6 +193,94 @@ export function validateRuleDoc(
     );
   }
   return { errors, warnings };
+}
+
+/** Port of the engine's `check_tree`: one-way phases on metrics that never fall, a
+ *  catch-all last phase and situation, cells that name what exists and say which entry wins. */
+function checkTree(
+  d: RuleDoc,
+  reg: StrategyRegistry | undefined,
+  checkConds: (cs: Cond[], at: string, beforeBuy: boolean) => void,
+  checkLine: (l: Line, at: string, conditional: boolean) => void,
+  errors: string[],
+) {
+  const t = d.tree!;
+  if (d.stages.length) errors.push('A rule has stages or a stage tree, not both: remove the stages');
+  if (!t.phases.length || !t.situations.length) errors.push('A stage tree needs at least one phase and one situation');
+  if (t.phases.length > MAX_PHASES || t.situations.length > MAX_SITUATIONS) {
+    errors.push(`A stage tree has at most ${MAX_PHASES} phases and ${MAX_SITUATIONS} situations`);
+  }
+  const live = (cs: Cond[]) => cs.some((c) => !c.off);
+  const names = (what: string, list: { name: string }[]) => {
+    const seen = new Set<string>();
+    for (const { name } of list) {
+      const nErr = nameError(name, `${what} name`);
+      if (nErr) errors.push(nErr);
+      if (seen.has(name)) errors.push(`Two ${what.toLowerCase()}s are named \`${name}\``);
+      seen.add(name);
+    }
+  };
+  names('Phase', t.phases);
+  names('Situation', t.situations);
+  t.phases.forEach((p, i) => {
+    const at = `Phase \`${p.name}\``;
+    const last = i === t.phases.length - 1;
+    if (last && live(p.until)) errors.push(`${at} is the last phase: it has no until`);
+    if (!last && !live(p.until)) errors.push(`${at} needs an until: the conditions that end it`);
+    checkConds(p.until, `${at}, until`, true);
+    p.until.forEach((c, ci) => {
+      const cAt = `${at}, until, condition ${ci + 1}`;
+      if (c.kind === 'signal') {
+        errors.push(`${cAt}: metric conditions only`);
+        return;
+      }
+      const spec = findMetric(reg, c.ref.metric);
+      // A trailing window can fall even on a count (engine `MetricRef::is_monotonic`).
+      const span = parseSpan(c.ref.span, c.ref.slice);
+      const windowed = typeof span !== 'string' && span.kind === 'window';
+      if (spec && (spec.position || !spec.monotonic || windowed)) {
+        errors.push(`${cAt}: ${c.ref.metric} can fall, so a passed phase could come back; use a metric that never falls (m_state.age_sec, m_state.peak_liquidity_sol, a count over the life)`);
+      }
+      if (c.is.flat().some((x) => x.operator !== '>' && x.operator !== '>=')) {
+        errors.push(`${cAt}: use > or >=, a phase ends when the metric reaches a value`);
+      }
+    });
+  });
+  t.situations.forEach((s, i) => {
+    const at = `Situation \`${s.name}\``;
+    const last = i === t.situations.length - 1;
+    if (last && live(s.when)) errors.push(`${at} is the last situation: it has no when, it catches the rest`);
+    if (!last && !live(s.when)) errors.push(`${at} needs a when; only the last situation catches the rest`);
+    checkConds(s.when, `${at}, when`, false);
+  });
+  const phaseNames = t.phases.map((p) => p.name);
+  const situationNames = t.situations.map((s) => s.name);
+  const nameOk = (p: string | null, s: string | null, at: string) => {
+    if (p != null && !phaseNames.includes(p)) errors.push(`${at}: there is no phase \`${p}\``);
+    if (s != null && !situationNames.includes(s)) errors.push(`${at}: there is no situation \`${s}\``);
+  };
+  const key = (p: string | null, s: string | null) => `${p ?? '*'} x ${s ?? '*'}`;
+  const covered = new Set<string>();
+  for (const c of t.cells) {
+    const at = `Sell lines for ${cellTitle(c.phase, c.situation)}`;
+    nameOk(c.phase, c.situation, at);
+    if (covered.has(key(c.phase, c.situation))) errors.push(`${at}: written twice, keep one`);
+    covered.add(key(c.phase, c.situation));
+    c.on.forEach((l, li) => {
+      const lAt = `${at}, line ${li + 1}`;
+      if (l.go) errors.push(`${lAt}: a cell has no go, the coin moves by its phase and situation`);
+      else if (l.sell && (l.sell.pct != null || l.sell.ofBag)) errors.push(`${lAt}: a part sell in a cell would sell again on the next print`);
+      else checkLine(l, lAt, true);
+    });
+  }
+  for (const p of phaseNames) {
+    for (const s of situationNames) {
+      if (!covered.has(key(p, s)) && covered.has(key(p, null)) && covered.has(key(null, s))) {
+        errors.push(`Cell ${p} x ${s} gets sell lines from both its row (${p}) and its column (${s}): give it lines of its own so it is clear which it runs`);
+      }
+    }
+  }
+  d.enter.cells.forEach(([p, s], i) => nameOk(p, s, `Buy in cells, ${i + 1}`));
 }
 
 /**

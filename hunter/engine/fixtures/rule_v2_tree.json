@@ -1,0 +1,335 @@
+{
+  "enter": {
+    "event": [
+      {
+        "metric": "m_flow.trade_count",
+        "tag": "dump",
+        "is": [
+          {
+            "operator": "<",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "m_price.trail_pct",
+        "is": [
+          {
+            "operator": "<=",
+            "value": 40
+          }
+        ]
+      },
+      {
+        "metric": "m_state.liquidity_sol",
+        "is": [
+          {
+            "operator": ">=",
+            "value": 5
+          }
+        ]
+      },
+      {
+        "metric": "m_state.on_curve",
+        "is": [
+          {
+            "operator": "=",
+            "value": 1
+          }
+        ]
+      },
+      {
+        "metric": "m_price.rise_pct",
+        "span": "5s",
+        "is": [
+          {
+            "operator": "<=",
+            "value": 27
+          }
+        ]
+      }
+    ],
+    "cells": [
+      [
+        "p2",
+        "leaving"
+      ],
+      [
+        "p2",
+        "shake_light"
+      ],
+      [
+        "p3",
+        "leaving"
+      ],
+      [
+        "p3",
+        "shake_light"
+      ],
+      [
+        "p4a",
+        "leaving"
+      ],
+      [
+        "p4a",
+        "shake_light"
+      ]
+    ]
+  },
+  "signals": {
+    "leaving": [
+      [
+        {
+          "metric": "m_flow.sell_sol",
+          "tag": "!volume",
+          "span": "5s",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 0.3
+            }
+          ]
+        },
+        {
+          "metric": "m_flow.net_sol",
+          "tag": "!volume",
+          "span": "5s",
+          "is": [
+            {
+              "operator": "<",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    ]
+  },
+  "always": [
+    {
+      "if": [
+        {
+          "metric": "m_flow.trade_count",
+          "tag": "dump",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "sell": "dump_print"
+    }
+  ],
+  "phases": [
+    {
+      "name": "p1",
+      "until": [
+        {
+          "metric": "m_state.age_sec",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 1.9
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "p2",
+      "until": [
+        {
+          "metric": "m_state.age_sec",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 8.5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "p3",
+      "until": [
+        {
+          "metric": "m_state.age_sec",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 32
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "p4a",
+      "until": [
+        {
+          "metric": "m_state.peak_liquidity_sol",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 45
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "p4b",
+      "until": [
+        {
+          "metric": "m_state.peak_liquidity_sol",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 65
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "p4c"
+    }
+  ],
+  "situations": [
+    {
+      "name": "burst",
+      "when": [
+        {
+          "metric": "m_flow.buy_sol",
+          "tag": "!volume",
+          "span": "1s",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 0.5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "shake_held",
+      "when": [
+        {
+          "metric": "m_flow.net_sol",
+          "tag": "volume",
+          "span": "5s",
+          "is": [
+            {
+              "operator": "<=",
+              "value": -1.5
+            }
+          ]
+        },
+        {
+          "metric": "m_flow.net_sol",
+          "tag": "!volume",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 0.5
+            }
+          ]
+        },
+        {
+          "signal": "leaving",
+          "not": true
+        }
+      ]
+    },
+    {
+      "name": "shake_light",
+      "when": [
+        {
+          "metric": "m_flow.net_sol",
+          "tag": "volume",
+          "span": "5s",
+          "is": [
+            {
+              "operator": "<=",
+              "value": -1.5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "leaving",
+      "when": [
+        {
+          "signal": "leaving"
+        }
+      ]
+    },
+    {
+      "name": "pump_held",
+      "when": [
+        {
+          "metric": "m_flow.net_sol",
+          "tag": "!volume",
+          "is": [
+            {
+              "operator": ">=",
+              "value": 0.5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "pump_light"
+    }
+  ],
+  "cells": [
+    {
+      "phase": "*",
+      "situation": "burst",
+      "on": [
+        {
+          "if": [
+            {
+              "metric": "m_flow.buy_sol",
+              "tag": "!volume",
+              "span": "1s",
+              "is": [
+                {
+                  "operator": ">=",
+                  "value": 0.5
+                }
+              ]
+            }
+          ],
+          "sell": "burst"
+        }
+      ]
+    },
+    {
+      "phase": "p4a",
+      "situation": "burst",
+      "on": [
+        {
+          "if": [
+            {
+              "metric": "m_flow.buy_sol",
+              "tag": "!volume",
+              "span": "1s",
+              "is": [
+                {
+                  "operator": ">=",
+                  "value": 1.5
+                }
+              ]
+            }
+          ],
+          "sell": "burst"
+        }
+      ]
+    }
+  ]
+}

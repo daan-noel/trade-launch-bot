@@ -148,6 +148,20 @@ impl Fingerprint {
         Ok(fp)
     }
 
+    /// For an UPDATE: a shape list the body does not name keeps the stored value. A
+    /// PUT replaces the row, so a client written before the lists existed (or one
+    /// that forgot them) would otherwise reset them to empty and silently WIDEN what
+    /// the fingerprint matches. Only an explicit `[]` / `null` clears a list.
+    pub fn inherit_absent_shapes(&mut self, body: &serde_json::Value, stored: &Fingerprint) {
+        if body.get("alt_criteria").is_none() {
+            self.alt_criteria = stored.alt_criteria.clone();
+        }
+        if body.get("exclude_criteria").is_none() {
+            self.exclude_criteria = stored.exclude_criteria.clone();
+        }
+        self.canonicalize();
+    }
+
     /// Store the shape lists in their one canonical order — the engine's own
     /// [`EngineFingerprint::canonicalize`], so the two readers of one row agree.
     pub fn canonicalize(&mut self) {
@@ -934,6 +948,38 @@ mod tests {
 
         let bad = serde_json::json!({ "criteria": { "ix_count": { "min": 5 } }, "exclude_criteria": [{ "nope": { "min": 1 } }] });
         assert!(Fingerprint::from_json(&bad, Uuid::nil(), now).is_err());
+    }
+
+    /// An update body that never heard of the shape lists must not clear them.
+    #[test]
+    fn an_update_that_omits_the_shape_lists_keeps_the_stored_ones() {
+        let now = Utc::now();
+        let stored = Fingerprint::from_json(
+            &serde_json::json!({
+                "criteria": { "ix_count": { "min": 4, "max": 4 } },
+                "alt_criteria": [{ "ix_count": { "min": 5, "max": 5 } }],
+                "exclude_criteria": [{ "cu_price": { "min": 250000, "max": 250000 } }],
+            }),
+            Uuid::nil(),
+            now,
+        )
+        .unwrap();
+        let old_client = serde_json::json!({ "criteria": { "ix_count": { "min": 4, "max": 4 } }, "tags": {} });
+        let mut fp = Fingerprint::from_json(&old_client, Uuid::nil(), now).unwrap();
+        assert!(!fp.is_multi_shape(), "parsed alone it is the single shape");
+        fp.inherit_absent_shapes(&old_client, &stored);
+        assert_eq!((&fp.alt_criteria, &fp.exclude_criteria), (&stored.alt_criteria, &stored.exclude_criteria));
+        assert!(fp.validate().is_ok());
+
+        // An explicit empty list is how a client clears one.
+        let clearing = serde_json::json!({
+            "criteria": { "ix_count": { "min": 4, "max": 4 } },
+            "alt_criteria": [],
+            "exclude_criteria": null,
+        });
+        let mut fp = Fingerprint::from_json(&clearing, Uuid::nil(), now).unwrap();
+        fp.inherit_absent_shapes(&clearing, &stored);
+        assert!(!fp.is_multi_shape());
     }
 
     #[test]

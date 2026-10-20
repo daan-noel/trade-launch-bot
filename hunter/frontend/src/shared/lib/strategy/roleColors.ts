@@ -8,6 +8,8 @@ export const ROLE = {
   sell: 'var(--color-sell)',
   info: 'var(--color-info)',
   stage: 'var(--color-accent)',
+  /** A stage tree's phases share the stage color; its situations take this one. */
+  situation: 'var(--color-primary)',
   signal: 'var(--color-secondary)',
   warn: 'var(--color-warning)',
   text: 'var(--color-text)',

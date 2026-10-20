@@ -133,6 +133,7 @@ export function LineEditor({
   stages,
   checkpoint,
   index,
+  cell,
 }: {
   line: Line;
   onChange: (l: Line) => void;
@@ -144,6 +145,8 @@ export function LineEditor({
   /** An at-deadline line: no condition means "always, at the deadline". */
   checkpoint?: boolean;
   index: number;
+  /** A stage-tree cell line: sells everything, never moves (no part sell, no go). */
+  cell?: boolean;
 }) {
   const sellOn = line.sell != null;
   return (
@@ -195,7 +198,7 @@ export function LineEditor({
                       his %
                     </label>
                   )}
-                  {!line.sell?.ofBag && (
+                  {!line.sell?.ofBag && !cell && (
                     <Input
                       fieldSize="sm"
                       className="w-16"
@@ -227,21 +230,25 @@ export function LineEditor({
                   />
                 </>
               )}
-              <span className="whitespace-nowrap">{sellOn ? 'and go to' : 'go to'}</span>
-              <Select
-                className="w-32"
-                value={line.go ?? ''}
-                disabled={ctx.disabled}
-                onChange={(e) => onChange({ ...line, go: e.target.value || null })}
-              >
-                <option value="">{sellOn ? '(stay)' : 'pick a stage...'}</option>
-                {line.go && !stages.includes(line.go) && <option value={line.go}>{line.go} (missing)</option>}
-                {stages.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </Select>
+              {!cell && (
+                <>
+                  <span className="whitespace-nowrap">{sellOn ? 'and go to' : 'go to'}</span>
+                  <Select
+                    className="w-32"
+                    value={line.go ?? ''}
+                    disabled={ctx.disabled}
+                    onChange={(e) => onChange({ ...line, go: e.target.value || null })}
+                  >
+                    <option value="">{sellOn ? '(stay)' : 'pick a stage...'}</option>
+                    {line.go && !stages.includes(line.go) && <option value={line.go}>{line.go} (missing)</option>}
+                    {stages.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </Select>
+                </>
+              )}
               <div className="ml-auto flex h-7 shrink-0 items-center gap-0.5">
                 {onMove && (
                   <>
@@ -279,6 +286,7 @@ export function LineList({
   checkpoint,
   addLabel = 'line',
   defaultGo,
+  cell,
 }: {
   lines: Line[];
   onChange: (ls: Line[]) => void;
@@ -288,6 +296,8 @@ export function LineList({
   addLabel?: string;
   /** A new line goes here instead of selling (e.g. the next stage). */
   defaultGo?: string;
+  /** Stage-tree cell lines (see {@link LineEditor}). */
+  cell?: boolean;
 }) {
   const set = (i: number, l: Line) => onChange(lines.map((x, j) => (j === i ? l : x)));
   const move = (i: number, d: -1 | 1) => {
@@ -318,6 +328,7 @@ export function LineList({
             ctx={ctx}
             stages={stages}
             checkpoint={checkpoint}
+            cell={cell}
             onChange={(n) => set(i, n)}
             onRemove={() => onChange(lines.filter((_, j) => j !== i))}
             onMove={lines.length > 1 ? (d) => move(i, d) : undefined}

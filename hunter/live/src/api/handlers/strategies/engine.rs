@@ -154,6 +154,11 @@ pub async fn update_fingerprint(
         Ok(fp) => fp,
         Err(e) => return HttpResponse::BadRequest().json(json!({ "error": e })),
     };
+    match app_state.fingerprint_repo.find(id).await {
+        Ok(Some(stored)) => fp.inherit_absent_shapes(&body, &stored),
+        Ok(None) => return HttpResponse::NotFound().json(json!({"error": "fingerprint not found"})),
+        Err(e) => return server_error("update fingerprint", e),
+    }
     fp.ensure_auto_name();
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(json!({ "error": e }));

@@ -1,6 +1,7 @@
 // The rule builder, in run order. Signal is its own row, above buy and sell.
 // Buy when is On, then Only if. Keep looking is Tries, then Give up. Sell is a
-// TP/SL chip, an Always chip, then one name per stage. Each chip keeps its role
+// TP/SL chip, an Always chip, then one name per stage, or one Stage tree chip
+// (the phase x situation grid). Each chip keeps its role
 // color. On, Only If, and Give Up are three greens. Tries is gray. A stage is
 // accent. Always is a dashed info outline. A signal is a dashed secondary
 // outline. TP/SL is a plain outline; the words carry buy and sell. The open
@@ -21,12 +22,13 @@ import { RULE_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { buyRoleColor, ROLE, sellRoleColor } from 'lib/strategy/roleColors';
 import { BUY_WHEN_LAST, BUY_WHEN_MISS, KEEP_LOOKING_MISS, buyChips, buyGateConds, LOCK_CHOICES, sellChips, signalChip, type BuyChip, type BuyKey } from 'lib/strategy/ruleChain';
 import { rulePart, type StrategyRegistry } from 'lib/strategy/registry';
-import { freshName, newStage, renameSignal, renameStage, type RuleDoc } from 'lib/strategy/ruleDoc';
+import { freshName, newStage, newTree, renameSignal, renameStage, type RuleDoc } from 'lib/strategy/ruleDoc';
 import type { CondContext } from './CondRow';
 import { GateFaces } from './MetricMark';
 import { CondList, LineList, PartHeader } from './parts';
 import { SignalsEditor } from './SignalsEditor';
 import { StagesEditor } from './StagesEditor';
+import { TreeEditor } from './TreeEditor';
 
 /** A chip's own color. Open fills it; closed stays an outline. Inline color beats the ghost button's hover. */
 function chipPaint(color: string, open: boolean, hot: boolean): { color: string; borderColor: string; backgroundColor: string } {
@@ -207,7 +209,8 @@ export function RuleChain({
   const toggle = (key: string) => setOpen((cur) => (cur === key ? null : key));
   useEffect(() => {
     if (open?.startsWith('stage:') && !doc.stages.some((s) => `stage:${s.id}` === open)) setOpen(null);
-  }, [doc.stages, open]);
+    if (open === 'tree' && !doc.tree) setOpen(null);
+  }, [doc.stages, doc.tree, open]);
 
   const setEnter = (e: Partial<RuleDoc['enter']>) => patch((d) => ({ ...d, enter: { ...d.enter, ...e } }));
   const signalNames = doc.signals.map((s) => s.name);
@@ -226,6 +229,10 @@ export function RuleChain({
     const stage = newStage(freshName(doc.stages.length ? 'stage' : 'start', stageNames));
     patch((d) => ({ ...d, stages: [...d.stages, stage] }));
     setOpen(`stage:${stage.id}`);
+  };
+  const addTree = () => {
+    patch((d) => ({ ...d, tree: newTree() }));
+    setOpen('tree');
   };
 
   return (
@@ -424,9 +431,21 @@ export function RuleChain({
               <PlusIcon className="size-3" /> Add Always
             </RoleChip>
           )}
-          <RoleChip color={sellRoleColor('stage').color} disabled={locked} onClick={addStage}>
-            <PlusIcon className="size-3" /> Add Stage
-          </RoleChip>
+          {!doc.tree && (
+            <RoleChip color={sellRoleColor('stage').color} disabled={locked} onClick={addStage}>
+              <PlusIcon className="size-3" /> Add Stage
+            </RoleChip>
+          )}
+          {!doc.tree && doc.stages.length === 0 && (
+            <RoleChip
+              color={sellRoleColor('stage').color}
+              disabled={locked}
+              onClick={addTree}
+              title="Instead of stages: phases (when in its life) x situations (what happens now), each cell with its own lines"
+            >
+              <PlusIcon className="size-3" /> Add Stage Tree
+            </RoleChip>
+          )}
         </div>
 
         {open === 'tpsl' && (
@@ -472,6 +491,11 @@ export function RuleChain({
               onChange={(stages) => patch((d) => ({ ...d, stages }))}
               onRename={(from, to) => patch((d) => renameStage(d, from, to))}
             />
+          </SellPane>
+        )}
+        {open === 'tree' && doc.tree && (
+          <SellPane>
+            <TreeEditor doc={doc} patch={patch} ctx={sellCtx} onRemove={() => patch((d) => ({ ...d, tree: null, enter: { ...d.enter, cells: [] } }))} />
           </SellPane>
         )}
       </div>

@@ -175,10 +175,18 @@ pub async fn update_fingerprint(
     path: web::Path<Uuid>,
     body: web::Json<serde_json::Value>,
 ) -> impl Responder {
-    let mut fp = match Fingerprint::from_json(&body, path.into_inner(), chrono::Utc::now()) {
+    let id = path.into_inner();
+    let mut fp = match Fingerprint::from_json(&body, id, chrono::Utc::now()) {
         Ok(fp) => fp,
         Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
     };
+    match fp_repo(&app_state).find(id).await {
+        Ok(Some(stored)) => fp.inherit_absent_shapes(&body, &stored),
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({ "error": "fingerprint not found" }))
+        }
+        Err(e) => return srv_err("update fingerprint", e),
+    }
     fp.ensure_auto_name();
     if let Err(e) = fp.validate() {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));

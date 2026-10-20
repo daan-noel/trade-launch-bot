@@ -18,6 +18,8 @@ import { formatMetricThreshold, parseSpan, refLabel } from './metricRef';
 import { findMetric, type MetricUnit, type StrategyRegistry } from './registry';
 import {
   allLines,
+  cellBuys,
+  cellEntryFor,
   entersOnArm,
   liveMetricConds,
   metricCond,
@@ -499,7 +501,8 @@ function deadlineReached(
  *
  * The held side mirrors `held_line`: `always` lines, then the stage deadline (its
  * `at_end` lines, else the move to `then`), else the stage's `on` lines; a `go` moves
- * the stage. The first sell ends the walk and is labelled with the exit reason it books.
+ * the stage. A stage tree runs `always`, then the current cell's lines, and buys only in
+ * `enter.cells`. The first sell ends the walk and is labelled with the exit reason it books.
  * Not modelled: the entry lock, and `m_position` reads other than the stage clock,
  * which come from the series (the inspected run's entry fill, absent without one).
  */
@@ -513,13 +516,35 @@ export function findRuleFireMarkers(
   const judge = new SeriesJudge(rule, data, registry);
   const { doc } = rule;
   const entryConds = [...doc.enter.event, ...doc.enter.final_filters, ...doc.enter.filters].filter((c) => !c.off);
-  const vetoLines = [...rule.always, ...(doc.stages[0]?.on ?? [])].filter((l) => l.sell);
+  const tree = doc.tree;
+  /** The stage-tree cell at row `i` (engine `CompiledRule::tree_cell`): the phase is how
+   *  many leading `until`s hold, the situation the first `when` that holds, else the last. */
+  const cellAt = (i: number, pos: PositionView): [string, string] | null => {
+    if (!tree) return null;
+    const untils = tree.phases.slice(0, -1);
+    let phase = untils.findIndex((p) => !judge.allHold(p.until, i, null));
+    if (phase < 0) phase = untils.length;
+    const whens = tree.situations.slice(0, -1);
+    let sit = whens.findIndex((s) => judge.allHold(s.when, i, pos));
+    if (sit < 0) sit = whens.length;
+    return [tree.phases[phase].name, tree.situations[sit].name];
+  };
+  const cellLines = (i: number, pos: PositionView): Line[] => {
+    const cell = cellAt(i, pos);
+    return cell && tree ? (cellEntryFor(tree, cell[0], cell[1])?.on ?? []) : [];
+  };
+  const firstLines = (i: number) => (tree ? cellLines(i, null) : (doc.stages[0]?.on ?? []));
+  const entryCellOk = (i: number) => {
+    const cell = cellAt(i, null);
+    return !cell || cellBuys(doc.enter.cells, cell[0], cell[1]);
+  };
 
-  let entryIdx: number | null = entersOnArm(doc) ? 0 : null;
+  let entryIdx: number | null = entersOnArm(doc) && entryCellOk(0) ? 0 : null;
   let entryLabel: string | null = null;
   if (entryIdx == null) {
     for (let i = 0; i < n; i++) {
-      if (!judge.allHold(entryConds, i, null) || judge.firstLine(vetoLines, i, null)) continue;
+      if (!judge.allHold(entryConds, i, null) || !entryCellOk(i)) continue;
+      if (judge.firstLine([...rule.always, ...firstLines(i)].filter((l) => l.sell), i, null)) continue;
       entryIdx = i;
       const flipped = i === 0 ? [] : entryConds.filter((c) => !judge.holds(c, i - 1, null));
       entryLabel = joinFired((flipped.length ? flipped : entryConds).map((c) => judge.firedLabel(c, i, null)));
@@ -536,7 +561,8 @@ export function findRuleFireMarkers(
     for (let i = entryIdx + 1; i < n && exitIdx == null; i++) {
       const pos = { stageStartSec };
       let acted = judge.firstLine(rule.always, i, pos);
-      const st = doc.stages[stage];
+      if (!acted && tree) acted = judge.firstLine(cellLines(i, pos), i, pos);
+      const st = tree ? undefined : doc.stages[stage];
       if (!acted && st) {
         if (st.ends && deadlineReached(st.ends, judge, i, entrySec, stageStartSec)) {
           acted = judge.firstLine(st.at_end, i, pos);

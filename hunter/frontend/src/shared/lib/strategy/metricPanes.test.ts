@@ -299,3 +299,28 @@ describe('metricConditionBands', () => {
     expect(metricConditionBands(rule({}), D, REGISTRY, null)).toBeNull();
   });
 });
+
+describe('findRuleFireMarkers: stage tree', () => {
+  it('buys only in an entry cell and sells on the most specific cell entry', () => {
+    const r = rule({
+      enter: { event: [c('m_state.liquidity_sol', '>=', 10)], cells: [['*', 'quiet']] },
+      phases: [{ name: 'early', until: [c('m_state.age_sec', '>=', 3)] }, { name: 'late' }],
+      situations: [{ name: 'busy', when: [c('m_flow.buy_sol', '>=', 5)] }, { name: 'quiet' }],
+      cells: [
+        { phase: '*', situation: 'busy', on: [{ if: [c('m_flow.buy_sol', '>=', 5)], sell: 'busy' }] },
+        { phase: 'late', situation: 'busy', on: [{ if: [c('m_flow.buy_sol', '>=', 8)], sell: 'big' }] },
+      ],
+    });
+    const d = data([
+      col('m_state.age_sec', [0, 1, 2, 3, 4, 5]),
+      col('m_flow.buy_sol', [6, 0, 0, 6, 6, 9]),
+      col('m_state.liquidity_sol', [20, 20, 20, 20, 20, 20]),
+    ]);
+    // Row 0 is busy (no buy there); row 3 is late x busy, where 6 SOL is under the 8 the
+    // narrower entry asks: the wide `* x busy` line it replaces never fires.
+    expect(findRuleFireMarkers(r, d, REGISTRY).map((m) => [m.kind, m.time, m.label])).toEqual([
+      ['entry', at(1), 'm_state.liquidity_sol >= 10'],
+      ['exit', at(5), 'big'],
+    ]);
+  });
+});

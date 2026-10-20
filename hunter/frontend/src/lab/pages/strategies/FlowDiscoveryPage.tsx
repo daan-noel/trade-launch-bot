@@ -97,7 +97,7 @@ import { coreLabels } from 'lib/strategy/ixCore';
 import { dominantFeeVariant, feeSpreadBand } from 'lib/feeVariants';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
 import { parseIxLabelsFilter, buildFieldFilters } from '@lab/components/sweep/fingerprintFilters';
-import type { Fingerprint } from 'lib/strategy/types';
+import { fingerprintUpdateBody, type Fingerprint } from 'lib/strategy/types';
 import {
   GROUP_FIELD_LABELS,
   LAMPORTS_GROUP_FIELDS,
@@ -1071,16 +1071,11 @@ export function FlowDiscoveryPage() {
         // other tag, matcher and option is carried by `withTagDraft`.
         await updateFp({
           id: targetFp.id,
-          body: {
-            name: targetFp.name,
-            // The whole criteria map round-trips: a PUT replaces the row, so an
-            // omitted axis would silently WIDEN what this fingerprint matches. Same
-            // reason `wildcard` is sent — omitted it defaults to false, turning a
-            // match-everything row into a criterion-less one.
-            criteria: targetFp.criteria,
-            wildcard: targetFp.wildcard,
+          // `fingerprintUpdateBody` round-trips every identity field: a PUT replaces
+          // the row, so an omitted one would WIDEN what it matches.
+          body: fingerprintUpdateBody(targetFp, {
             tags: withTagDraft(targetFp.tags, stageTag, draftPatterns, draftWallets, draftSwitches),
-          },
+          }),
         }).unwrap();
         setApplyOk(`Saved ${stageWrites} on "${targetFp.name}".`);
         return;
@@ -1107,12 +1102,9 @@ export function FlowDiscoveryPage() {
       // update of the row it just created.
       fp = await updateFp({
         id: fp.id,
-        body: {
-          name: fp.name,
-          criteria: fp.criteria,
-          wildcard: fp.wildcard,
+        body: fingerprintUpdateBody(fp, {
           tags: withTagDraft(fp.tags, stageTag, draftPatterns, draftWallets, draftSwitches),
-        },
+        }),
       }).unwrap();
       setTargetFpId(fp.id);
       setApplyOk(`Bound fingerprint "${fp.name}" with ${stageWrites}.`);

@@ -405,19 +405,24 @@ export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?:
     // Identity, not decoration: a wildcard and an axis-free row would otherwise
     // sort as the same fingerprint while matching opposite token sets.
     fp.wildcard ? 'wildcard' : '',
-    // Every configured axis, in registry order — so a new axis is part of the sort
-    // key without an edit here, and two rows differing only on one still sort apart.
-    configuredAxes(fp.criteria ?? {})
-      .map(([id, pred]) =>
-        pred.kind === 'sequence'
-          ? `${id}:${(configuredIxLabels(pred.labels) ?? []).join(',')}`
-          // Every span, so a `!=` / `|` axis sorts on the whole set it accepts
-          // rather than on its first window.
-          : `${id}:${predicateSpans(pred)
-              .map((sp) => `${sp.min ?? ''}-${sp.max ?? ''}`)
-              .join('+')}`,
+    // Every shape, include then exclude (each axis in registry order), so a new
+    // axis is part of the sort key without an edit here and two rows differing only
+    // in a later shape still sort apart.
+    [fp.criteria ?? {}, ...(fp.alt_criteria ?? []), ...(fp.exclude_criteria ?? [])]
+      .map((c) =>
+        configuredAxes(c)
+          .map(([id, pred]) =>
+            pred.kind === 'sequence'
+              ? `${id}:${(configuredIxLabels(pred.labels) ?? []).join(',')}`
+              : // Every span, so a `!=` / `|` axis sorts on the whole set it accepts
+                // rather than on its first window.
+                `${id}:${predicateSpans(pred)
+                  .map((sp) => `${sp.min ?? ''}-${sp.max ?? ''}`)
+                  .join('+')}`,
+          )
+          .join(''),
       )
-      .join(''),
+      .join('\u0002'),
     // The tags' CONTENTS, not their count: `tags` is row identity, so two rows that
     // classify trades differently must not collapse into one sort key.
     ...FP_CONFIG_LISTS.map((s) => s.identity(fp)),

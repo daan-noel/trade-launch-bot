@@ -154,6 +154,18 @@ fn the_shared_full_rule_fixture_parses_and_round_trips() {
     assert_eq!(p.stages[2].at_end.len(), 1);
 }
 
+/// `fixtures/rule_v2_tree.json` is the 6ix stage-tree rule; the frontend round-trips the
+/// same file (`validate.test.ts`).
+#[test]
+fn the_shared_tree_rule_fixture_parses_and_round_trips() {
+    let doc: Value = serde_json::from_str(include_str!("../fixtures/rule_v2_tree.json")).expect("fixture parses");
+    let p = RuleParams::parse(&doc).expect("the shared tree fixture is a valid rule");
+    assert_eq!(norm(&p.to_value()), norm(&doc));
+    let t = p.tree.as_ref().expect("a stage tree");
+    assert_eq!((t.phases.len(), t.situations.len(), t.cells.len()), (6, 6, 2));
+    assert_eq!(p.enter.cells.len(), 6);
+}
+
 /// A stage's own line that goes to that stage and keeps part of the bag would never act.
 #[test]
 fn a_stage_line_to_its_own_stage_is_refused() {
@@ -244,4 +256,61 @@ fn follow_bought_roundtrips_and_each_is_refused() {
     assert!(RuleParams::parse(&each).unwrap_err().contains("each"));
     let bare = json!({ "follow": "bought", "enter": { "event": [] } });
     assert!(RuleParams::parse(&bare).unwrap_err().contains("unknown"));
+}
+
+/// A stage tree: two phases, two situations, a row entry, one exact cell and entry cells.
+fn tree_doc() -> Value {
+    json!({
+        "enter": { "event": [c("m_state.age_sec", ">=", 1.0)], "cells": [["late", "*"], ["early", "calm"]] },
+        "phases": [
+            { "name": "early", "until": [c("m_state.peak_liquidity_sol", ">=", 45.0)] },
+            { "name": "late" }
+        ],
+        "situations": [
+            { "name": "hot", "when": [c("m_state.liquidity_sol", ">=", 30.0)] },
+            { "name": "calm" }
+        ],
+        "cells": [
+            { "phase": "*", "situation": "hot", "on": [{ "if": [c("m_state.liquidity_sol", ">=", 30.0)], "sell": "burst" }] },
+            { "phase": "late", "situation": "hot", "on": [{ "if": [c("m_state.liquidity_sol", ">=", 60.0)], "sell": "big" }] }
+        ]
+    })
+}
+
+#[test]
+fn a_stage_tree_round_trips() {
+    let v = tree_doc();
+    let p = RuleParams::parse(&v).unwrap();
+    let t = p.tree.as_ref().unwrap();
+    assert_eq!((t.phases.len(), t.situations.len(), t.cells.len()), (2, 2, 2));
+    assert_eq!(p.to_value(), v);
+    assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
+}
+
+#[test]
+fn a_stage_tree_refuses_what_could_not_run_as_written() {
+    let refused = |patch: Value, needle: &str| {
+        let mut v = tree_doc();
+        for (k, x) in patch.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        let e = RuleParams::parse(&v).unwrap_err();
+        assert!(e.contains(needle), "`{e}` should say `{needle}`");
+    };
+    refused(json!({ "phases": [{ "name": "early", "until": [c("m_state.liquidity_sol", ">=", 45.0)] }, { "name": "late" }] }), "can fall");
+    refused(json!({ "phases": [{ "name": "early", "until": [c("m_state.age_sec", "<", 5.0)] }, { "name": "late" }] }), "use > or >=");
+    refused(json!({ "phases": [{ "name": "early" }, { "name": "late" }] }), "needs an `until`");
+    refused(json!({ "situations": [{ "name": "hot", "when": [c("m_state.liquidity_sol", ">=", 30.0)] }, { "name": "calm", "when": [c("m_state.age_sec", ">=", 1.0)] }] }), "catches the rest");
+    refused(json!({ "cells": [
+        { "phase": "late", "situation": "*", "on": [{ "if": [c("m_state.age_sec", ">=", 9.0)], "sell": "a" }] },
+        { "phase": "*", "situation": "hot", "on": [{ "if": [c("m_state.age_sec", ">=", 9.0)], "sell": "b" }] }
+    ] }), "covered by both");
+    refused(json!({ "cells": [{ "phase": "*", "situation": "hot", "on": [{ "if": [c("m_state.age_sec", ">=", 9.0)], "sell": "a", "sell_pct": 50.0 }] }] }), "part sell");
+    refused(json!({ "cells": [{ "phase": "nope", "situation": "hot", "on": [] }] }), "no phase `nope`");
+    refused(json!({ "stages": [{ "name": "a" }] }), "not both");
+    let mut no_tree = tree_doc();
+    for k in ["phases", "situations", "cells"] {
+        no_tree.as_object_mut().unwrap().remove(k);
+    }
+    assert!(RuleParams::parse(&no_tree).unwrap_err().contains("enter.cells needs a stage tree"));
 }

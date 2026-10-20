@@ -339,4 +339,62 @@ mod tests {
             "tags is row identity: {IDENTITY_WHERE}"
         );
     }
+
+    /// The shape lists are identity too: two rows with the same first shape and
+    /// different alternatives or exclusions select different tokens.
+    #[test]
+    fn identity_includes_both_shape_lists() {
+        let cols = predicate_columns();
+        assert!(cols.contains(&"alt_criteria") && cols.contains(&"exclude_criteria"), "{IDENTITY_WHERE}");
+    }
+
+    /// Insert, find by identity, update and find-or-create a multi-shape row against a
+    /// real database, then delete it. Leaves nothing behind.
+    #[tokio::test]
+    #[ignore = "needs DATABASE_URL with core migration 0033 applied; creates and deletes one fingerprint row"]
+    async fn a_multi_shape_row_round_trips_through_the_repo() {
+        use super::FingerprintRepo;
+        use crate::models::Fingerprint;
+        use hunter_engine::fingerprint::{AxisId, AxisPredicate, Criteria};
+
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&url).await.expect("connect");
+        let repo = FingerprintRepo::new(pool);
+
+        let shape = |n: u128| Criteria::new().with(AxisId::IxCount, AxisPredicate::exact(n));
+        let mut fp = Fingerprint::empty(uuid::Uuid::new_v4(), chrono::Utc::now());
+        fp.criteria = shape(5);
+        fp.alt_criteria = vec![shape(4)];
+        fp.exclude_criteria = vec![shape(7)];
+        // A unique tag document, so this never collides with a real row's identity.
+        fp.tags = serde_json::json!({ "repo_test": { "match": { "creator": true } } });
+        fp.canonicalize();
+
+        repo.insert(&fp).await.expect("insert");
+        let got = async {
+            let found = repo.find_by_identity(&fp).await.expect("find_by_identity").expect("found by identity");
+            assert_eq!(found.id, fp.id);
+            assert_eq!((&found.criteria, &found.alt_criteria, &found.exclude_criteria), (&fp.criteria, &fp.alt_criteria, &fp.exclude_criteria));
+
+            // A different exclusion is a different row: identity does not find it.
+            let mut other = fp.clone();
+            other.exclude_criteria = vec![shape(6)];
+            assert!(repo.find_by_identity(&other).await.expect("find").is_none());
+
+            // find_or_create on the same identity returns the existing row.
+            let again = repo.find_or_create(&fp).await.expect("find_or_create");
+            assert_eq!(again.id, fp.id);
+
+            // Update the exclusion list, read it back.
+            let mut edited = found.clone();
+            edited.exclude_criteria = vec![shape(6)];
+            repo.update(&edited).await.expect("update");
+            let reread = repo.find(fp.id).await.expect("find").expect("row");
+            assert_eq!(reread.exclude_criteria, vec![shape(6)]);
+            assert_eq!(reread.alt_criteria, fp.alt_criteria, "the other list is untouched");
+        }
+        .await;
+        repo.delete(fp.id).await.expect("cleanup");
+        got
+    }
 }

@@ -205,12 +205,21 @@ export function predicatesEqual(a: AxisPredicate | undefined, b: AxisPredicate |
  */
 export function fingerprintMatchesIdentity(fp: Fingerprint, id: FingerprintIdentity): boolean {
   if (fp.wildcard !== id.wildcard) return false;
-  // One axis map on each side is all this compares, so a row with further shapes
-  // is a different token set than any single-shape identity.
-  if (fingerprintIsMultiShape(fp) || fingerprintIsMultiShape(id)) return false;
-  const a = fp.criteria ?? {};
-  const b = id.criteria ?? {};
-  return AXES.every((def) => predicatesEqual(a[def.id], b[def.id]));
+  // Both lists are identity columns. The backend canonicalises them on the saved row
+  // AND on the identity it authors, so equal lists are equal position by position;
+  // a single-shape row on one side only never matches a multi-shape one.
+  const sameShapes = (x?: Criteria[], y?: Criteria[]) =>
+    (x ?? []).length === (y ?? []).length && (x ?? []).every((c, i) => criteriaEqual(c, (y ?? [])[i]));
+  return (
+    criteriaEqual(fp.criteria, id.criteria) &&
+    sameShapes(fp.alt_criteria, id.alt_criteria) &&
+    sameShapes(fp.exclude_criteria, id.exclude_criteria)
+  );
+}
+
+/** Whether two axis maps name the same token set, axis by axis. */
+export function criteriaEqual(a: Criteria | undefined, b: Criteria | undefined): boolean {
+  return AXES.every((def) => predicatesEqual((a ?? {})[def.id], (b ?? {})[def.id]));
 }
 
 /**

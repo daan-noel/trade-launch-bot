@@ -284,3 +284,45 @@ describe('single-value readers', () => {
     expect(groupValueLabels('A | B')).toBeNull();
   });
 });
+
+describe('multi-shape rows', () => {
+  const range = (n: string) => ({ kind: 'range' as const, min: n, max: n });
+  const base = {
+    id: 'x',
+    name: 'x',
+    wildcard: false,
+    tags: {},
+    created_at: '',
+    updated_at: '',
+  };
+
+  it('matches the identity the backend authored for the same shape lists', () => {
+    const row = {
+      ...base,
+      criteria: { ix_count: range('4') },
+      alt_criteria: [{ ix_count: range('5') }],
+      exclude_criteria: [{ ix_count: range('7') }],
+    };
+    const same = { ...fingerprintToIdentity(row) };
+    expect(fingerprintMatchesIdentity(row, same)).toBe(true);
+    // A different exclusion is a different token set.
+    const other = { ...same, exclude_criteria: [{ ix_count: range('6') }] };
+    expect(fingerprintMatchesIdentity(row, other)).toBe(false);
+    // A single-shape identity never matches a multi-shape row.
+    const single = { criteria: { ix_count: range('4') }, wildcard: false };
+    expect(fingerprintMatchesIdentity(row, single)).toBe(false);
+  });
+
+  it('keys a multi-shape row apart from its first shape alone', () => {
+    const first = { ...base, criteria: { ix_count: range('4') } };
+    const multi = { ...first, exclude_criteria: [{ ix_count: range('7') }] };
+    expect(fingerprintIdentityKey(fingerprintToIdentity(first))).not.toBe(
+      fingerprintIdentityKey(fingerprintToIdentity(multi)),
+    );
+  });
+
+  it('is never a compatible refinement of a group card', () => {
+    const multi = { ...base, criteria: { ix_count: range('4') }, exclude_criteria: [{ ix_count: range('7') }] };
+    expect(fingerprintCompatibleWithGroupKey(multi, { ix_count: { kind: 'window', min: '4', max: '4' } })).toBe(false);
+  });
+});
