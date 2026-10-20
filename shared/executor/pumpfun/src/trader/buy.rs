@@ -7,6 +7,7 @@
 // and pool replenishment so the next buy starts warm.
 // ============================================================
 
+use super::assemble::CuPath;
 use super::PumpFunTrader;
 use crate::error::{Context, Result, TradeError};
 use crate::protocol;
@@ -529,19 +530,14 @@ impl PumpFunTrader {
         min_tokens_out: u64,
         tip_level: u8,
     ) -> Result<Vec<Instruction>> {
-        let mut ixs = Vec::with_capacity(6);
-        ixs.extend_from_slice(&self.engine.cu_ixs_curve_buy);
-        ixs.extend(account_creation_ixs);
-        ixs.push(self.curve_buy_ix(
+        let buy_ix = self.curve_buy_ix(
             mint,
             pdas,
             user_token_account,
             buy_lamports,
             min_tokens_out,
-        )?);
-        ixs.push(self.jito_tip_ix(tip_level));
-
-        Ok(ixs)
+        )?;
+        Ok(self.decorate(CuPath::CurveBuy, account_creation_ixs, vec![buy_ix], tip_level))
     }
 
     /// The bare curve-buy instruction (`buy_exact_sol_in`) — SSOT for the buy

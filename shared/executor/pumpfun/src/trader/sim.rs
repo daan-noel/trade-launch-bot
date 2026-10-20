@@ -17,6 +17,7 @@
 // invoke inline before a real send (see CLAUDE.md latency budgets).
 // ============================================================
 
+use super::assemble::CuPath;
 use super::PumpFunTrader;
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol;
@@ -228,10 +229,7 @@ impl PumpFunTrader {
             .await?;
         // Mirror `amm_buy`'s tx assembly (CU budget + core swap + level-0 tip) so
         // the simulated bytes match the live send.
-        let mut ixs = Vec::with_capacity(core_ixs.len() + self.engine.cu_ixs_amm.len() + 1);
-        ixs.extend_from_slice(&self.engine.cu_ixs_amm);
-        ixs.extend(core_ixs);
-        ixs.push(self.jito_tip_ix(0));
+        let ixs = self.decorate(CuPath::Amm, Vec::new(), core_ixs, 0);
         self.simulate_ixs(ixs, &user, &[user, user_base]).await
     }
 
@@ -287,10 +285,7 @@ impl PumpFunTrader {
                 Some(&payer),
             )
             .await?;
-        let mut ixs = Vec::with_capacity(core_ixs.len() + self.engine.cu_ixs_amm.len() + 1);
-        ixs.extend_from_slice(&self.engine.cu_ixs_amm);
-        ixs.extend(core_ixs);
-        ixs.push(self.jito_tip_ix(0));
+        let ixs = self.decorate(CuPath::Amm, Vec::new(), core_ixs, 0);
         let user_base = self
             .resolve_user_base_account(token_mint, token_account_override)
             .await?;

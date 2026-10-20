@@ -13,8 +13,10 @@
 use crate::engine::Engine;
 use crate::config::JitoTipCfg;
 use crate::error::{Context, Result};
+use rand::Rng;
 use serde::Deserialize;
 use solana_sdk::instruction::Instruction;
+use solana_sdk::pubkey::Pubkey;
 use solana_sdk::system_instruction;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -169,17 +171,26 @@ fn sol_to_lamports(sol: f64) -> u64 {
 impl Engine {
     /// Build the per-trade tip instruction for a **single-tx** buy/sell, sized from
     /// the live tip-floor cache for retry `level` (0 = first attempt). These txs
-    /// submit through the Helius `/fast` sender, so the tip goes to
-    /// `sender_tip_account` (a Helius Sender wallet) — NOT `jito_tip_account`: the
-    /// sender rejects a Jito-account tip with `-32602` and the tx never broadcasts.
-    /// The account is fixed per trader instance; only the amount varies with the
-    /// auction and the escalation level. See [`JitoTipCache::tip_lamports_for_level`].
+    /// submit through the Helius `/fast` sender, so the tip goes to a Helius
+    /// Sender wallet — NOT `jito_tip_account`: the sender rejects a Jito-account
+    /// tip with `-32602` and the tx never broadcasts. See [`Self::sender_tip`].
     pub fn jito_tip_ix(&self, level: u8) -> Instruction {
-        system_instruction::transfer(
-            &self.config.signer.pubkey(),
-            &self.sender_tip_account,
-            self.jito_tip_cache.tip_lamports_for_level(level),
-        )
+        let (account, lamports) = self.sender_tip(level);
+        system_instruction::transfer(&self.config.signer.pubkey(), &account, lamports)
+    }
+
+    /// `(tip account, tip lamports)` for a single-tx buy/sell at retry `level`.
+    /// The amount comes from [`JitoTipCache::tip_lamports_for_level`]. The account
+    /// is a fresh pick from `sender_tip_pool` per call when
+    /// [`crate::config::FeeShapeCfg::enabled`], else the instance's fixed
+    /// `sender_tip_account`.
+    pub fn sender_tip(&self, level: u8) -> (Pubkey, u64) {
+        let account = if self.config.fee_shape.enabled && !self.sender_tip_pool.is_empty() {
+            self.sender_tip_pool[rand::thread_rng().gen_range(0..self.sender_tip_pool.len())]
+        } else {
+            self.sender_tip_account
+        };
+        (account, self.jito_tip_cache.tip_lamports_for_level(level))
     }
 }
 

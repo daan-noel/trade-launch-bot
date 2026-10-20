@@ -55,14 +55,10 @@ pub struct Engine {
     pub http: reqwest::Client,
     pub rpc: Arc<RpcClient>,
 
-    // Pre-built compute-budget instruction pairs (CU limit + price), built once
-    // in `initialize()` and cloned per tx. Split by path because the priority fee
-    // scales with the requested CU limit, and curve trades are far lighter than
-    // AMM swaps — see `ComputeBudgetCfg`.
-    pub cu_ixs_curve_buy: Vec<Instruction>,
-    pub cu_ixs_curve_sell: Vec<Instruction>,
+    // Pre-built create compute-budget pair (CU limit + price), built once in
+    // `initialize()`. The single-tx buy/sell/AMM pairs are built per tx by the
+    // venue (`FeeShapeCfg` may vary them), from `ComputeBudgetCfg`.
     pub cu_ixs_curve_create: Vec<Instruction>,
-    pub cu_ixs_amm: Vec<Instruction>,
 
     // Jito tip: a fixed tip account (chosen once per instance) plus a
     // background-refreshed tip-floor cache that sizes the tip amount per trade.
@@ -74,6 +70,9 @@ pub struct Engine {
     // distinct (see `protocol::HELIUS_SENDER_TIP_ACCOUNTS`).
     pub jito_tip_account: Pubkey,
     pub sender_tip_account: Pubkey,
+    /// Every valid Sender tip wallet; `sender_tip` picks from it per tx when
+    /// fee shaping is on (`sender_tip_account` is one member of it).
+    pub sender_tip_pool: &'static [Pubkey],
     pub jito_tip_cache: Arc<JitoTipCache>,
 
     // Nonce management
@@ -149,10 +148,12 @@ impl Engine {
     /// token-account sizes (used to size the rent read + the buy-template pool).
     /// Nothing touches the network here — call [`Engine::initialize`] once before
     /// trading to prime the caches and spawn the refreshers.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Arc<TraderConfig>,
         jito_tip_account: Pubkey,
         sender_tip_account: Pubkey,
+        sender_tip_pool: &'static [Pubkey],
         token_account_space: u64,
         token_account_rent: u64,
         token_2022_account_space: u64,
@@ -191,12 +192,10 @@ impl Engine {
             config,
             http,
             rpc,
-            cu_ixs_curve_buy: Vec::new(),
-            cu_ixs_curve_sell: Vec::new(),
             cu_ixs_curve_create: Vec::new(),
-            cu_ixs_amm: Vec::new(),
             jito_tip_account,
             sender_tip_account,
+            sender_tip_pool,
             jito_tip_cache: Arc::new(JitoTipCache::new(jito_cfg)),
             nonce_pubkeys: Vec::new(),
             nonce_cursor: AtomicUsize::new(0),
@@ -250,26 +249,14 @@ impl Engine {
             .await
             .context("Failed to get rent for token-2022 account")?;
 
-        // 2. Compute budget instructions — built once, cloned per tx. The CU limit
-        // is sized per path so the priority fee = price × limit isn't inflated by
-        // sizing every tx for the heaviest path. Shared price ix, per-path limit.
+        // 2. Create compute-budget pair — built once, cloned per create tx. The CU
+        // limit is sized per path so the priority fee = price × limit isn't inflated
+        // by sizing every tx for the heaviest path.
         let compute = &self.config.compute;
         let price_ix =
             ComputeBudgetInstruction::set_compute_unit_price(compute.price_micro_lamports);
-        let cu_ixs_curve_buy = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(compute.curve_buy_cu),
-            price_ix.clone(),
-        ];
-        let cu_ixs_curve_sell = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(compute.curve_sell_cu),
-            price_ix.clone(),
-        ];
         let cu_ixs_curve_create = vec![
             ComputeBudgetInstruction::set_compute_unit_limit(compute.curve_create_cu),
-            price_ix.clone(),
-        ];
-        let cu_ixs_amm = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(compute.amm_cu),
             price_ix,
         ];
         info!(
@@ -280,10 +267,14 @@ impl Engine {
             compute.curve_create_cu,
             compute.amm_cu,
         );
-        self.cu_ixs_curve_buy = cu_ixs_curve_buy;
-        self.cu_ixs_curve_sell = cu_ixs_curve_sell;
+        if self.config.fee_shape.enabled {
+            info!(
+                "🎲 Fee shape on: buy/sell/amm CU limit drawn up to x{} (price rounded down                  to {} µlamports, fee <= the configured pair), random Sender tip account                  and decoration order per tx",
+                self.config.fee_shape.limit_span_mult,
+                self.config.fee_shape.price_step_micro_lamports,
+            );
+        }
         self.cu_ixs_curve_create = cu_ixs_curve_create;
-        self.cu_ixs_amm = cu_ixs_amm;
 
         // 3. Jito tip — prime the tip-floor cache once, then refresh in background.
         if let Err(e) = refresh_tip_floor(&self.http, &self.jito_tip_cache).await {

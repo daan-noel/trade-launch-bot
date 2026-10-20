@@ -8,6 +8,7 @@
 // assembles, signs, sends, and confirms one sell tx.
 // ============================================================
 
+use super::assemble::CuPath;
 use super::{PumpFunTrader, TokenPDAs};
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol;
@@ -505,9 +506,6 @@ impl PumpFunTrader {
     ) -> Result<Vec<Instruction>> {
         let global = self.global_account.as_ref().context("Not initialized")?;
 
-        let mut ixs = Vec::with_capacity(6);
-        ixs.extend_from_slice(&self.engine.cu_ixs_curve_sell);
-
         // Sell (Sell exact token in)
         // 8-byte discriminator + two u64 args: size up front so the two extends
         // below don't reallocate on the sell hot path.
@@ -553,16 +551,14 @@ impl PumpFunTrader {
         accounts.push(AccountMeta::new_readonly(pdas.bonding_curve_v2, false));
         accounts.push(AccountMeta::new(protocol::PUMP_CURVE_FEE_RECIPIENT, false));
 
-        ixs.push(Instruction {
+        let sell_ix = Instruction {
             program_id: protocol::PUMP_FUN,
             accounts,
             data: sell_data,
-        });
+        };
 
         // Jito tip — escalated by the caller's retry level.
-        ixs.push(self.jito_tip_ix(tip_level));
-
-        Ok(ixs)
+        Ok(self.decorate(CuPath::CurveSell, Vec::new(), vec![sell_ix], tip_level))
     }
 }
 
@@ -597,8 +593,8 @@ mod tests {
             Arc::new(Keypair::new()),
             vec![Pubkey::new_unique()],
         )));
-        // `build_curve_sell_ixs` needs the global account + compute-budget ixs
-        // that `initialize()` would populate; set the minimum it reads here.
+        // `build_curve_sell_ixs` needs the global account that `initialize()`
+        // would populate; set the minimum it reads here.
         t.global_account = Some(GlobalAccount {
             global_pda: Pubkey::new_unique(),
             fee_recipient: Pubkey::new_unique(),
@@ -607,10 +603,6 @@ mod tests {
             fee_config: Pubkey::new_unique(),
             stable_quote_mint: None,
         });
-        t.engine.cu_ixs_curve_sell = vec![
-            solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(100_000),
-            solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_price(1),
-        ];
         t
     }
 

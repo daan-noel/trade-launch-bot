@@ -297,6 +297,7 @@ impl PumpFunTrader {
             Arc::clone(&config),
             jito_tip_account,
             sender_tip_account,
+            &protocol::HELIUS_SENDER_TIP_ACCOUNTS,
             protocol::TOKEN_ACCOUNT_SPACE,
             protocol::TOKEN_ACCOUNT_RENT_PLACEHOLDER,
             protocol::TOKEN_2022_ACCOUNT_SPACE,

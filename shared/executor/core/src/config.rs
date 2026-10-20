@@ -225,6 +225,43 @@ impl Default for SenderCfg {
     }
 }
 
+/// Per-tx variation of the single-tx buy/sell decorations, so consecutive trades
+/// do not share one compute-budget pair, one tip account and one instruction
+/// order. Off by default (every tx keeps the configured limit/price, the fixed
+/// tip account and the canonical order); a long-lived host turns it on.
+///
+/// The fee never rises: each path's budget is `<path>_cu x price_micro_lamports`
+/// from [`ComputeBudgetCfg`], the drawn limit lies in
+/// `[<path>_cu, <path>_cu x limit_span_mult]`, and the price is that budget over
+/// the drawn limit rounded DOWN to `price_step_micro_lamports`. The tip amount
+/// is untouched.
+#[derive(Clone, Debug)]
+pub struct FeeShapeCfg {
+    pub enabled: bool,
+    /// Upper end of the drawn CU limit as a multiple of the path's configured
+    /// limit (the configured limit is the floor).
+    pub limit_span_mult: f64,
+    /// Granularity of a drawn CU limit, in CU.
+    pub limit_step_cu: u32,
+    /// Granularity of a drawn CU price, in micro-lamports per CU.
+    pub price_step_micro_lamports: u64,
+    /// Share of draws taken from the lowest third of the limit range (the
+    /// highest-price third), which keeps most txs at or above today's priority.
+    pub low_band_weight: f64,
+}
+
+impl Default for FeeShapeCfg {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            limit_span_mult: 2.0,
+            limit_step_cu: 5_000,
+            price_step_micro_lamports: 5_000,
+            low_band_weight: 0.6,
+        }
+    }
+}
+
 /// Slippage defaults applied when a caller doesn't pass a per-call tolerance.
 #[derive(Clone, Debug)]
 pub struct SlippageCfg {
@@ -310,6 +347,7 @@ pub struct TraderConfig {
     pub nonce: NonceCfg,
     pub cache: CacheCfg,
     pub sender: SenderCfg,
+    pub fee_shape: FeeShapeCfg,
     pub slippage: SlippageCfg,
     pub limits: LimitsCfg,
 }
@@ -337,6 +375,7 @@ impl TraderConfig {
             nonce: NonceCfg::default(),
             cache: CacheCfg::default(),
             sender: SenderCfg::default(),
+            fee_shape: FeeShapeCfg::default(),
             slippage: SlippageCfg::default(),
             limits: LimitsCfg::default(),
         }
@@ -359,6 +398,7 @@ impl std::fmt::Debug for TraderConfig {
             .field("nonce", &self.nonce)
             .field("cache", &self.cache)
             .field("sender", &self.sender)
+            .field("fee_shape", &self.fee_shape)
             .field("slippage", &self.slippage)
             .field("limits", &self.limits)
             .finish()

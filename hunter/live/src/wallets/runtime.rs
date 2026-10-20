@@ -64,6 +64,9 @@ impl TraderFactory {
         cfg.nonce.refresh_first_delay_ms = 2_000;
         // The Sender drops an idle socket after 10 s; the pinger keeps it warm.
         cfg.sender.keep_warm_ms = Some(SENDER_KEEP_WARM_MS);
+        // Per-tx CU pair (fee capped at the configured pair), Sender tip account
+        // and decoration order, so consecutive trades do not share one shape.
+        cfg.fee_shape.enabled = true;
         cfg
     }
 

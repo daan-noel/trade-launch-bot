@@ -15,6 +15,7 @@
 // a WSOL token account (buy) / unwraps proceeds (sell) and closes it afterward.
 // ============================================================
 
+use super::assemble::CuPath;
 use super::{AmmGlobalConfig, AmmPoolInfo, PumpFunTrader};
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol::{
@@ -111,10 +112,7 @@ impl PumpFunTrader {
                 )
                 .await?;
 
-            let mut ixs = Vec::with_capacity(core_ixs.len() + self.engine.cu_ixs_amm.len() + 1);
-            ixs.extend_from_slice(&self.engine.cu_ixs_amm);
-            ixs.extend(core_ixs);
-            ixs.push(self.jito_tip_ix(0));
+            let ixs = self.decorate(CuPath::Amm, Vec::new(), core_ixs, 0);
 
             // Recent blockhash (not durable nonce): the swap already carries ~27
             // accounts, and a nonce-advance would push the legacy tx over 1232 bytes.
@@ -250,10 +248,7 @@ impl PumpFunTrader {
                 )
                 .await?;
 
-            let mut ixs = Vec::with_capacity(core_ixs.len() + self.engine.cu_ixs_amm.len() + 1);
-            ixs.extend_from_slice(&self.engine.cu_ixs_amm);
-            ixs.extend(core_ixs);
-            ixs.push(self.jito_tip_ix(tip_level));
+            let ixs = self.decorate(CuPath::Amm, Vec::new(), core_ixs, tip_level);
 
             // Acquire the nonce only after `build_amm_sell_ixs`' pool/config/reserve
             // reads — don't hold the slot `in_use` across that RPC. The block below

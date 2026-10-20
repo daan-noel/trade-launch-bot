@@ -20,6 +20,7 @@ pub mod blockhash;
 pub mod config;
 pub mod engine;
 pub mod error;
+pub mod fee_shape;
 pub mod ix_layout;
 pub mod jito_tip;
 pub mod nonce;
@@ -46,11 +47,12 @@ pub fn sol_to_lamports(sol: f64) -> u64 {
 }
 
 pub use config::{
-    CacheCfg, ComputeBudgetCfg, JitoTipCfg, LimitsCfg, NonceCfg, RetryCfg, SenderCfg, SlippageCfg,
+    CacheCfg, ComputeBudgetCfg, FeeShapeCfg, JitoTipCfg, LimitsCfg, NonceCfg, RetryCfg, SenderCfg, SlippageCfg,
     TraderConfig, SENDER_IDLE_CLOSE_MS, SENDER_KEEP_WARM_MS,
 };
 pub use engine::{buy_lamports_checked, Engine};
 pub use error::{Context, Result, TradeError};
+pub use fee_shape::{draw_compute_budget, pick_layout};
 pub use ix_layout::{DecoStep, IxLayout, LayoutKind};
 pub use nonce::{check_nonce_account, NonceAuthCheck, NonceRefreshOnDrop, NonceTxState};
 pub use retry::{
