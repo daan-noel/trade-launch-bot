@@ -908,7 +908,9 @@ impl PumpFunTrader {
             let tx = match self
                 .rpc_json(
                     "getTransaction",
-                    json!([sig, { "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0 }]),
+                    // Version 1: a pool's swaps can be v1 transactions, which the RPC
+                    // rejects at a max of 0 (the failure below then skips every one).
+                    json!([sig, { "encoding": "jsonParsed", "maxSupportedTransactionVersion": 1 }]),
                 )
                 .await
             {
