@@ -65,6 +65,8 @@ fn cu_fp(id: u128) -> Fingerprint {
         id: fid(id),
         wildcard: false,
         criteria: Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
+        alt_criteria: Vec::new(),
+        exclude_criteria: Vec::new(),
         tags: hunter_engine::v1::convert_metric_config(&json!({ "m_flow_ix": { "ix_patterns": [["Pump.Fun: Buy"]] } })).unwrap(),
     }
 }

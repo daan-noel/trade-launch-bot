@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { DataTable } from 'components/table/DataTable';
@@ -127,6 +127,37 @@ const COLOR_COLS: {
   })),
 ];
 
+/** Card rows the "Used by" list shows before it scrolls. */
+const USED_BY_VISIBLE_ROWS = 2;
+
+/** Cap a grid list at its first `rows` rows of cards and scroll the rest.
+ *  Measured, not guessed: a card's height varies with its rule chain, and the grid
+ *  is one or two columns by width, so the cap is the top of the first card in row
+ *  `rows + 1`, minus the gap. `null` while everything fits. */
+function useCapToRows(rows: number, count: number) {
+  const listRef = useRef<HTMLUListElement>(null);
+  const [maxHeight, setMaxHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const ul = listRef.current;
+    if (!ul) return;
+    const measure = () => {
+      const items = Array.from(ul.children) as HTMLElement[];
+      const tops = [...new Set(items.map((el) => el.offsetTop))].sort((a, b) => a - b);
+      if (tops.length <= rows) {
+        setMaxHeight(null);
+        return;
+      }
+      const gap = parseFloat(getComputedStyle(ul).rowGap) || 0;
+      setMaxHeight(tops[rows] - tops[0] - gap);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(ul);
+    return () => ro.disconnect();
+  }, [rows, count]);
+  return { listRef, maxHeight };
+}
+
 /** Expanded row detail: rules that reference this fingerprint, with the same
  *  params summary as the Rules table so you can tell them apart at a glance.
  *  Hovering a card for 1 second opens that rule's In words reading.
@@ -144,6 +175,7 @@ function FingerprintUsedByDetail({
   boardHref: string;
   boardLabel: string;
 }) {
+  const { listRef, maxHeight } = useCapToRows(USED_BY_VISIBLE_ROWS, rules.length);
   if (rules.length === 0) {
     return (
       <EmptyState compact message="Not used by any rules — safe to delete." />
@@ -162,7 +194,11 @@ function FingerprintUsedByDetail({
           Open {boardLabel} →
         </Link>
       </div>
-      <ul className="grid gap-2 sm:grid-cols-2">
+      <ul
+        ref={listRef}
+        className="grid gap-2 overflow-y-auto pr-1 sm:grid-cols-2"
+        style={maxHeight != null ? { maxHeight } : undefined}
+      >
         {rules.map((r) => (
           <li key={r.id}>
             <RuleHoverTip
@@ -639,7 +675,7 @@ export function FingerprintsView({
       />
       <Modal
         title={editingId ? 'Edit fingerprint' : 'New fingerprint'}
-        size="xl"
+        size="xxl"
         open={editing !== null}
         onClose={() => setEditing(null)}
       >
@@ -659,6 +695,7 @@ export function FingerprintsView({
             <FingerprintForm
               key={editing === 'new' ? 'new' : editing.id}
               initial={editing === 'new' ? undefined : editing}
+              library={fps}
               onSubmit={submit}
               onCancel={() => setEditing(null)}
               submitting={creating || updating}

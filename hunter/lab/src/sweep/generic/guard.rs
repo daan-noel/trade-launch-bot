@@ -168,6 +168,8 @@ fn token_at(mint: &str, created_secs: f64, trades: Vec<CorpusTrade>) -> (CorpusT
 fn fingerprint() -> Fingerprint {
     Fingerprint {
         id: FingerprintId(FP_ID),
+        alt_criteria: Vec::new(),
+        exclude_criteria: Vec::new(),
         tags: json!({}),
         wildcard: false,
         criteria: Criteria::new()

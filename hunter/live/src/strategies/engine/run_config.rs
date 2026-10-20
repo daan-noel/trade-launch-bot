@@ -73,11 +73,18 @@ impl RunConfigSig {
                 // Identity is the wildcard flag AND the axes: `wildcard` is a
                 // criterion of its own (it arms on everything), so hashing the axes
                 // alone would miss the widest edit there is.
+                // The shape lists join only when set, so a single-shape row hashes
+                // exactly as it did before they existed.
                 fp.map_or(0, |f| {
-                    hash_json(&serde_json::json!({
+                    let mut id = serde_json::json!({
                         "wildcard": f.wildcard,
                         "criteria": f.criteria,
-                    }))
+                    });
+                    if f.is_multi_shape() {
+                        id["alt_criteria"] = serde_json::json!(f.alt_criteria);
+                        id["exclude_criteria"] = serde_json::json!(f.exclude_criteria);
+                    }
+                    hash_json(&id)
                 }),
                 fp.map_or(0, |f| hash_json(&f.tags)),
             ],
@@ -142,6 +149,8 @@ mod tests {
             id: FingerprintId(Uuid::nil()),
             wildcard: true,
             criteria: Criteria::new(),
+            alt_criteria: Vec::new(),
+            exclude_criteria: Vec::new(),
             tags,
         }
     }

@@ -57,6 +57,8 @@ fn cu_fp(id: u128) -> Fingerprint {
         criteria: Criteria::new()
             .with(AxisId::CuLimit, AxisPredicate::exact(200_000))
             .with(AxisId::FirstSlotBuyLamports, AxisPredicate::exact(1_000_000_000)),
+        alt_criteria: Vec::new(),
+        exclude_criteria: Vec::new(),
         tags: serde_json::json!({}),
     }
 }

@@ -231,6 +231,17 @@ impl GroupSelection {
             blockers: Vec::new(),
             identity: None,
         };
+        // A multi-shape scope (several include shapes, or exclusions) is not one
+        // axis map, so step 1 copied only its first shape: a fingerprint built from
+        // it would match a different token set than the corpus the group came from.
+        if scope_fp.is_some_and(Fingerprint::is_multi_shape) {
+            sel.blockers.push(
+                "the scope fingerprint has several include or exclude shapes — promote from a \
+                 single-shape scope"
+                    .to_string(),
+            );
+            return sel;
+        }
         match sel.materialize(String::new()) {
             Ok(fp) => {
                 sel.promotable = true;

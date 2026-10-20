@@ -50,6 +50,13 @@ export interface Fingerprint {
    *  from the map is not part of identity. Bounds are decimal STRINGS over the full
    *  `u64` domain — see `fingerprintAxes.ts`. */
   criteria: Criteria;
+  /** Further include shapes: a token passes on `criteria` OR any of these (Rust
+   *  `Fingerprint::alt_criteria`). Never beside `wildcard`. Absent = none. Stored in
+   *  canonical order, so the server may return them reordered. Match identity. */
+  alt_criteria?: Criteria[];
+  /** Exclude shapes: a token matching any of these is rejected (Rust
+   *  `Fingerprint::exclude_criteria`). Allowed beside `wildcard`. Match identity. */
+  exclude_criteria?: Criteria[];
   /** Named trade lists (`{volume: {match: {...}, side, sticky, ...}}`), read by rules
    *  as `@volume` / `@!volume`: see `tagsDoc.ts`. `{}` = none, so every tag read is
    *  NaN. Not part of identity. */
@@ -59,6 +66,16 @@ export interface Fingerprint {
   /** How many rules reference this fingerprint — folded in by the list endpoint
    *  (`GET /api/fingerprints`); absent on single-row responses. */
   used_by?: number;
+}
+
+/** Whether a fingerprint has more than the single-shape form — an alternative
+ *  include shape or any exclusion. Mirrors Rust `Fingerprint::is_multi_shape`; a
+ *  reader that understands one `criteria` map (a group-key match) checks this
+ *  first. */
+export function fingerprintIsMultiShape(
+  fp: Pick<Fingerprint, 'alt_criteria' | 'exclude_criteria'>,
+): boolean {
+  return (fp.alt_criteria?.length ?? 0) > 0 || (fp.exclude_criteria?.length ?? 0) > 0;
 }
 
 /** The create/update body for a fingerprint (lamports on the wire). `id`,

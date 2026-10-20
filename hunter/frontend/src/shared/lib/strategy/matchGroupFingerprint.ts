@@ -9,7 +9,7 @@
 // a `u64::MAX` ceiling at all.
 
 import { configuredIxLabels } from 'lib/ixLabels';
-import type { Fingerprint } from './types';
+import { fingerprintIsMultiShape, type Fingerprint } from './types';
 import {
   AXES,
   axisDef,
@@ -73,6 +73,10 @@ export interface FingerprintIdentity {
    *  group key and the backend's match-identity DTO both leave it unset and still key
    *  onto the right row. Only {@link fingerprintToIdentity} fills it in. */
   tags?: Record<string, unknown>;
+  /** A saved row's further include and exclude shapes. A group key never has
+   *  any, so a multi-shape row never keys onto a card. Absent = none. */
+  alt_criteria?: Criteria[];
+  exclude_criteria?: Criteria[];
 }
 
 /** One group-key value, as the backend serializes it. */
@@ -201,6 +205,9 @@ export function predicatesEqual(a: AxisPredicate | undefined, b: AxisPredicate |
  */
 export function fingerprintMatchesIdentity(fp: Fingerprint, id: FingerprintIdentity): boolean {
   if (fp.wildcard !== id.wildcard) return false;
+  // One axis map on each side is all this compares, so a row with further shapes
+  // is a different token set than any single-shape identity.
+  if (fingerprintIsMultiShape(fp) || fingerprintIsMultiShape(id)) return false;
   const a = fp.criteria ?? {};
   const b = id.criteria ?? {};
   return AXES.every((def) => predicatesEqual(a[def.id], b[def.id]));
@@ -225,6 +232,8 @@ export function fingerprintCompatibleWithGroupKey(
   // is made of, so badging a card with it would claim the card's group is what the
   // rule arms on when the rule arms on every token.
   if (fp.wildcard) return false;
+  // Likewise a multi-shape row: its first shape alone is not what it arms on.
+  if (fingerprintIsMultiShape(fp)) return false;
   const criteria = fp.criteria ?? {};
   for (const [tag, raw] of Object.entries(gk)) {
     if (!isAxisId(tag)) continue;
@@ -257,6 +266,10 @@ export function fingerprintIdentityKey(id: FingerprintIdentity): string {
   });
   parts.push(id.wildcard ? 'any' : '');
   parts.push(canonicalJson(id.tags ?? {}));
+  // Only a multi-shape row adds anything, so every single-shape key is unchanged.
+  if (fingerprintIsMultiShape(id)) {
+    parts.push(canonicalJson(id.alt_criteria ?? []), canonicalJson(id.exclude_criteria ?? []));
+  }
   return parts.join('|');
 }
 
@@ -278,6 +291,8 @@ export function fingerprintToIdentity(fp: Fingerprint): FingerprintIdentity {
     criteria: fp.criteria ?? {},
     wildcard: fp.wildcard,
     tags: fp.tags ?? {},
+    alt_criteria: fp.alt_criteria ?? [],
+    exclude_criteria: fp.exclude_criteria ?? [],
   };
 }
 

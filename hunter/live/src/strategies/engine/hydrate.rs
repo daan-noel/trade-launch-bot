@@ -263,6 +263,8 @@ mod tests {
             id: FingerprintId(Uuid::from_u128(0xF)),
             wildcard: true,
             criteria: Criteria::new(),
+            alt_criteria: Vec::new(),
+            exclude_criteria: Vec::new(),
             tags: serde_json::json!({}),
         }
     }

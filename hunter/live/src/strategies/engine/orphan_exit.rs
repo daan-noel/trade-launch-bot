@@ -967,7 +967,7 @@ mod tests {
         }
 
         fn fp() -> Fingerprint {
-            Fingerprint { id: FingerprintId(Uuid::from_u128(0xF)), wildcard: true, criteria: Criteria::new(), tags: json!({}) }
+            Fingerprint { id: FingerprintId(Uuid::from_u128(0xF)), wildcard: true, criteria: Criteria::new(), alt_criteria: Vec::new(), exclude_criteria: Vec::new(), tags: json!({}) }
         }
 
         /// Buys on arm; `start` moves to `hold` at 10 s in the stage, and `hold` sells
@@ -1058,6 +1058,8 @@ mod tests {
                 id: FingerprintId(Uuid::from_u128(0xD)),
                 wildcard: true,
                 criteria: Criteria::new(),
+                alt_criteria: Vec::new(),
+                exclude_criteria: Vec::new(),
                 tags: json!({ "dev": { "match": { "creator": true } } }),
             }
         }

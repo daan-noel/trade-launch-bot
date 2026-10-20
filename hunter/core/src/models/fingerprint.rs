@@ -44,10 +44,17 @@ pub struct Fingerprint {
     /// said out loud or it is indistinguishable from a half-filled form.
     #[serde(default)]
     pub wildcard: bool,
-    /// The configured axes. Stored as one `JSONB` column, so a new axis needs no
+    /// The first include shape. Stored as one `JSONB` column, so a new axis needs no
     /// migration.
     #[serde(default)]
     pub criteria: Criteria,
+    /// Further include shapes — a token passes on `criteria` OR any of these
+    /// ([`hunter_engine::fingerprint`] module docs). Match identity.
+    #[serde(default)]
+    pub alt_criteria: Vec<Criteria>,
+    /// Exclude shapes — a token matching any of these is rejected. Match identity.
+    #[serde(default)]
+    pub exclude_criteria: Vec<Criteria>,
     /// The fingerprint's trade tags, `{name: definition}`
     /// ([`hunter_engine::metrics::tags::config`]). **Not** part of match identity — it
     /// selects no coin — but it IS part of ROW identity: two rows matching the same
@@ -72,6 +79,8 @@ impl Fingerprint {
             name: String::new(),
             wildcard: false,
             criteria: Criteria::new(),
+            alt_criteria: Vec::new(),
+            exclude_criteria: Vec::new(),
             tags: default_tags(),
             created_at: now,
             updated_at: now,
@@ -86,6 +95,8 @@ impl Fingerprint {
             id: FingerprintId(self.id),
             wildcard: self.wildcard,
             criteria: self.criteria.clone(),
+            alt_criteria: self.alt_criteria.clone(),
+            exclude_criteria: self.exclude_criteria.clone(),
             tags: self.tags.clone(),
         }
     }
@@ -105,6 +116,10 @@ impl Fingerprint {
     /// An **unknown axis key or an unparseable predicate is an error**, never a
     /// silent drop: a dropped axis reads as "not part of identity", which *widens*
     /// what the fingerprint matches instead of failing the write.
+    ///
+    /// `alt_criteria` / `exclude_criteria` are arrays of the same `criteria`
+    /// object, each parsed by the same code. The shape lists come out canonical
+    /// ([`Self::canonicalize`]), so the order a form sent them in is not identity.
     pub fn from_json(
         body: &serde_json::Value,
         id: Uuid,
@@ -118,15 +133,35 @@ impl Fingerprint {
             (None, Some(v1)) => hunter_engine::v1::convert_metric_config(v1)?,
             (None, None) => default_tags(),
         };
-        Ok(Fingerprint {
+        let mut fp = Fingerprint {
             id,
             name: body.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             wildcard: body.get("wildcard").and_then(|v| v.as_bool()).unwrap_or(false),
             criteria,
+            alt_criteria: parse_shape_list(body, "alt_criteria")?,
+            exclude_criteria: parse_shape_list(body, "exclude_criteria")?,
             tags,
             created_at: now,
             updated_at: now,
-        })
+        };
+        fp.canonicalize();
+        Ok(fp)
+    }
+
+    /// Store the shape lists in their one canonical order — the engine's own
+    /// [`EngineFingerprint::canonicalize`], so the two readers of one row agree.
+    pub fn canonicalize(&mut self) {
+        let mut e = self.to_engine();
+        e.canonicalize();
+        self.criteria = e.criteria;
+        self.alt_criteria = e.alt_criteria;
+        self.exclude_criteria = e.exclude_criteria;
+    }
+
+    /// Whether the row has more than the single-shape form (see
+    /// [`EngineFingerprint::is_multi_shape`]).
+    pub fn is_multi_shape(&self) -> bool {
+        !self.alt_criteria.is_empty() || !self.exclude_criteria.is_empty()
     }
 
     /// Whether any matchable criterion is configured.
@@ -143,7 +178,7 @@ impl Fingerprint {
 
     /// Whether any configured axis defers to the settled creation slot.
     pub fn has_first_slot_criteria(&self) -> bool {
-        !self.wildcard && self.criteria.has_deferred()
+        self.to_engine().has_first_slot_criteria()
     }
 
     /// **The ONE write-edge gate** for a persisted fingerprint — called by the live
@@ -172,15 +207,18 @@ impl Fingerprint {
     pub fn auto_name(&self) -> String {
         // A wildcard row has no axes to name (validation guarantees it), so it names
         // the token set it matches.
-        if self.wildcard {
-            return WILDCARD_NAME.into();
-        }
-        let parts: Vec<String> = self.criteria.iter().filter_map(|(id, p)| axis_chip(id, p)).collect();
-        if parts.is_empty() {
-            WILDCARD_NAME.into()
+        let include = if self.wildcard {
+            WILDCARD_NAME.to_string()
         } else {
-            parts.join(AUTO_NAME_SEP)
+            let shapes: Vec<String> =
+                std::iter::once(&self.criteria).chain(self.alt_criteria.iter()).map(shape_name).collect();
+            shapes.join(SHAPE_OR_SEP)
+        };
+        if self.exclude_criteria.is_empty() {
+            return include;
         }
+        let exclude: Vec<String> = self.exclude_criteria.iter().map(shape_name).collect();
+        format!("{include}{SHAPE_EXCLUDE_SEP}{}", exclude.join(SHAPE_OR_SEP))
     }
 
     /// True when `name` is blank or a retired auto-label.
@@ -213,6 +251,35 @@ impl Fingerprint {
         if self.has_stale_auto_name() {
             self.name = self.auto_name();
         }
+    }
+}
+
+/// One shape's name: its chips in registry order, or [`WILDCARD_NAME`] when it
+/// names nothing (the criterion-less draft the write edge rejects).
+fn shape_name(c: &Criteria) -> String {
+    let parts: Vec<String> = c.iter().filter_map(|(id, p)| axis_chip(id, p)).collect();
+    if parts.is_empty() {
+        WILDCARD_NAME.into()
+    } else {
+        parts.join(AUTO_NAME_SEP)
+    }
+}
+
+/// Parse an optional array of `criteria` objects (`alt_criteria`,
+/// `exclude_criteria`) off a wire body. Absent or `null` is the empty list; each
+/// element goes through [`parse_criteria`], so an unknown axis still fails the write.
+fn parse_shape_list(body: &serde_json::Value, key: &str) -> Result<Vec<Criteria>, String> {
+    match body.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(i, raw)| {
+                let raw = hunter_engine::v1::convert_criteria(raw);
+                parse_criteria(Some(&raw)).map_err(|e| format!("{key}[{i}]: {e}"))
+            })
+            .collect(),
+        Some(_) => Err(format!("{key} must be an array of criteria objects")),
     }
 }
 
@@ -277,6 +344,14 @@ fn parse_predicate(axis: AxisId, value: &serde_json::Value) -> Result<AxisPredic
 
 /// Chip separator. Mirrored by the TS `AUTO_NAME_SEP`.
 pub const AUTO_NAME_SEP: &str = " · ";
+
+/// Separates the include (or exclude) shapes of a multi-shape name:
+/// `5ix:Buy · cu_limit=400K | 4ix:Buy · spend=1`. Mirrored by the TS `SHAPE_OR_SEP`.
+pub const SHAPE_OR_SEP: &str = " | ";
+
+/// Separates the include shapes from the exclude shapes: `ALL - 7ix:Buy`.
+/// Mirrored by the TS `SHAPE_EXCLUDE_SEP`.
+pub const SHAPE_EXCLUDE_SEP: &str = " - ";
 
 /// Auto-name of a fingerprint with nothing to name from its axes: a `wildcard` row
 /// (which matches every token) and — for the criterion-less draft the write edge
@@ -387,10 +462,17 @@ pub fn is_generated_auto_name(name: &str) -> bool {
     if n.is_empty() {
         return false;
     }
-    if n == WILDCARD_NAME {
-        return true;
-    }
-    n.split(AUTO_NAME_SEP).all(is_auto_name_chip)
+    // `include - exclude`, each side `|`-joined shapes of `·`-joined chips. Only the
+    // include side may be the bare wildcard.
+    let (include, exclude) = match n.split_once(SHAPE_EXCLUDE_SEP) {
+        Some((i, x)) => (i, Some(x)),
+        None => (n, None),
+    };
+    let shapes_ok = |side: &str, allow_all: bool| {
+        side.split(SHAPE_OR_SEP)
+            .all(|s| (allow_all && s == WILDCARD_NAME) || s.split(AUTO_NAME_SEP).all(is_auto_name_chip))
+    };
+    shapes_ok(include, true) && exclude.is_none_or(|x| shapes_ok(x, false))
 }
 
 /// One chip of the [`is_generated_auto_name`] grammar. **Derived from the registry**,
@@ -792,6 +874,66 @@ mod tests {
                 assert!(!f.has_stale_auto_name(), "{name:?} must be stable once written");
             }
         }
+    }
+
+    /// Include and exclude shapes parse off the wire, come out canonical whatever
+    /// order they were sent in, and name themselves in a grammar the healer reads.
+    #[test]
+    fn multi_shape_rows_parse_canonical_and_name_themselves() {
+        let now = Utc::now();
+        let body = |alts: serde_json::Value| {
+            serde_json::json!({
+                "criteria": { "ix_count": { "min": 5, "max": 5 }, "cu_limit": { "min": 400000, "max": 400000 } },
+                "alt_criteria": alts,
+                "exclude_criteria": [{ "cu_price": { "min": 250000, "max": 250000 } }],
+            })
+        };
+        let a = Fingerprint::from_json(&body(serde_json::json!([{ "ix_count": { "min": 4, "max": 4 } }])), Uuid::nil(), now).unwrap();
+        assert!(a.validate().is_ok(), "{:?}", a.problems());
+        assert!(a.is_multi_shape());
+        assert_eq!(a.alt_criteria.len(), 1);
+        assert_eq!(a.exclude_criteria.len(), 1);
+
+        // The same two include shapes sent the other way round are one stored row.
+        let swapped = serde_json::json!({
+            "criteria": { "ix_count": { "min": 4, "max": 4 } },
+            "alt_criteria": [{ "ix_count": { "min": 5, "max": 5 }, "cu_limit": { "min": 400000, "max": 400000 } }],
+            "exclude_criteria": [{ "cu_price": { "min": 250000, "max": 250000 } }],
+        });
+        let b = Fingerprint::from_json(&swapped, Uuid::nil(), now).unwrap();
+        assert_eq!((&a.criteria, &a.alt_criteria), (&b.criteria, &b.alt_criteria));
+
+        let name = a.auto_name();
+        assert!(name.contains(SHAPE_OR_SEP) && name.contains(SHAPE_EXCLUDE_SEP), "{name}");
+        assert!(is_generated_auto_name(&name), "{name}");
+
+        // Byte-equal with the TS `multi-shape auto-name` golden. Sent 5-then-4, stored
+        // 4-then-5: canonical order is part of the name.
+        let golden = Fingerprint::from_json(
+            &serde_json::json!({
+                "criteria": { "ix_count": { "min": 5, "max": 5 } },
+                "alt_criteria": [{ "ix_count": { "min": 4, "max": 4 } }],
+                "exclude_criteria": [{ "ix_count": { "min": 7, "max": 7 } }],
+            }),
+            Uuid::nil(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(golden.auto_name(), "ix_count=4 | ix_count=5 - ix_count=7");
+
+        let mut all_but = Fingerprint::from_json(
+            &serde_json::json!({ "wildcard": true, "exclude_criteria": [{ "ix_count": { "min": 7, "max": 7 } }] }),
+            Uuid::nil(),
+            now,
+        )
+        .unwrap();
+        assert!(all_but.validate().is_ok(), "{:?}", all_but.problems());
+        assert_eq!(all_but.auto_name(), "ALL - ix_count=7");
+        all_but.name = "8dtx - GMGN Bot".into();
+        assert!(!all_but.has_stale_auto_name(), "a nickname with a dash stays a nickname");
+
+        let bad = serde_json::json!({ "criteria": { "ix_count": { "min": 5 } }, "exclude_criteria": [{ "nope": { "min": 1 } }] });
+        assert!(Fingerprint::from_json(&bad, Uuid::nil(), now).is_err());
     }
 
     #[test]

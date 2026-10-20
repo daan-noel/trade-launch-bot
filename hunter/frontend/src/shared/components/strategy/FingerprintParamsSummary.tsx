@@ -14,6 +14,7 @@ import {
   predicateSpans,
   type AxisId,
   type AxisPredicate,
+  type Criteria,
 } from 'lib/strategy/fingerprintAxes';
 import {
   configuredIxLabels,
@@ -280,6 +281,23 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
   const listChips = FP_CONFIG_LISTS.map((s) => (
     <Fragment key={s.key}>{s.chip(fp)}</Fragment>
   ));
+  // Every include shape (joined by "or") and every exclude shape (after "except"),
+  // so a multi-shape row never reads as its first shape alone.
+  const word = (text: string) => <span className="text-[10px] uppercase text-text-dim">{text}</span>;
+  const shapes = (list: Criteria[], prefix: string) =>
+    list.map((c, i) => (
+      <Fragment key={`${prefix}${i}`}>
+        {i > 0 && word('or')}
+        {configuredAxes(c).map(([id, pred]) => axisChip(id, pred))}
+      </Fragment>
+    ));
+  const exclude = fp.exclude_criteria ?? [];
+  const excludeChips = exclude.length > 0 && (
+    <>
+      {word('except')}
+      {shapes(exclude, 'x')}
+    </>
+  );
   if (fp.wildcard) {
     return (
       <div className="flex flex-wrap items-center gap-1 text-left">
@@ -287,16 +305,18 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
           style: axisTint('wildcard'),
           title: 'Wildcard — matches every token, ignoring every creation-shape axis',
         })}
+        {excludeChips}
         {listChips}
       </div>
     );
   }
-  const chips: ReactNode[] = [
-    ...configuredAxes(fp.criteria ?? {}).map(([id, pred]) => axisChip(id, pred)),
-    ...listChips,
-  ].filter(Boolean);
-
-  return <div className="flex flex-wrap items-center gap-1 text-left">{chips}</div>;
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-left">
+      {shapes([fp.criteria ?? {}, ...(fp.alt_criteria ?? [])], 'i')}
+      {excludeChips}
+      {listChips}
+    </div>
+  );
 }
 
 /** Axis chips for a fingerprint id — RTK-cached. Render as a sibling below
@@ -315,7 +335,8 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
   const parts: string[] = [fp.name || fp.id.slice(0, 8)];
   // Matches the chip text, so filtering by what is actually shown works.
   if (fp.wildcard) parts.push('ALL tokens wildcard');
-  for (const [id, pred] of configuredAxes(fp.criteria ?? {})) {
+  const allShapes = [fp.criteria ?? {}, ...(fp.alt_criteria ?? []), ...(fp.exclude_criteria ?? [])];
+  for (const [id, pred] of allShapes.flatMap((c) => configuredAxes(c))) {
     const def = axisDef(id);
     if (pred.kind === 'sequence') {
       const ix = configuredIxLabels(pred.labels);

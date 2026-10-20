@@ -4,14 +4,21 @@
 //! row; see `hunter/core/src/models/fingerprint.rs`). A token can match **many**.
 //!
 //! ```text
-//! Fingerprint = wildcard | Criteria { axis -> predicate }
+//! Fingerprint = (wildcard | shape OR shape OR ...)  AND NOT (shape OR shape OR ...)
+//! shape       = Criteria { axis -> predicate }      (every axis must hold)
 //! ```
+//!
+//! The include shapes are [`Fingerprint::criteria`] plus [`Fingerprint::alt_criteria`];
+//! the exclude shapes are [`Fingerprint::exclude_criteria`]. A one-shape fingerprint
+//! with no exclusions is the plain `Criteria` row, so every older row keeps its meaning.
 //!
 //! * **[`axis`]** is the registry: one `AxisDef` per matchable axis, carrying its
 //!   wire key, kind, unit, match phase, definition, and the reader that pulls the
 //!   observed value off a [`TokenFingerprint`]. Adding an axis touches that table
 //!   and nothing here.
-//! * An axis **absent** from the criteria map is not part of identity.
+//! * An axis **absent** from a shape is not part of that shape.
+//! * An exclude shape excludes only a token it has **fully judged**: an unknown value
+//!   fails the shape, so the token is not excluded by it.
 //! * A configured axis whose observed value is unknown **fails** — an unknown value
 //!   is never shown to satisfy a bound.
 //! * A fingerprint with no criteria matches **nothing**. "Every token" is spelled
@@ -60,9 +67,18 @@ pub struct Fingerprint {
     /// map: both would make "unconfigured" and "everything" the same state.
     #[serde(default)]
     pub wildcard: bool,
-    /// The configured axes. Empty (without `wildcard`) matches nothing.
+    /// The first include shape. Empty (without `wildcard`) matches nothing.
     #[serde(default)]
     pub criteria: Criteria,
+    /// Further include shapes: a token passes on [`Self::criteria`] OR any of these.
+    /// Never set beside `wildcard`, and never without `criteria`; stored canonical
+    /// ([`Self::canonicalize`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alt_criteria: Vec<Criteria>,
+    /// Exclude shapes: a token matching ANY of these is rejected, whatever it
+    /// included on. Allowed beside `wildcard` ("every token except ...").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_criteria: Vec<Criteria>,
     /// The fingerprint's tags: named trade lists, `{name: definition}`
     /// ([`crate::metrics::tags::config`]). **Not** part of match identity — compiled
     /// once per reload.
@@ -74,6 +90,20 @@ fn default_tags() -> serde_json::Value {
     serde_json::json!({})
 }
 
+/// One shape's sort key — its canonical JSON. `Criteria` is a `BTreeMap` in registry
+/// order, so equal shapes serialise to equal text.
+fn shape_key(c: &Criteria) -> String {
+    serde_json::to_string(c).unwrap_or_default()
+}
+
+/// Sorted by [`shape_key`] with duplicates dropped — the one stored order of a shape
+/// list, so two spellings of one token set are one row.
+fn canonical_shapes(mut shapes: Vec<Criteria>) -> Vec<Criteria> {
+    shapes.sort_by_cached_key(shape_key);
+    shapes.dedup();
+    shapes
+}
+
 impl Fingerprint {
     /// A fingerprint with no criteria — matches nothing until an axis or the
     /// wildcard is set. The one constructor callers build from.
@@ -82,8 +112,57 @@ impl Fingerprint {
             id,
             wildcard: false,
             criteria: Criteria::new(),
+            alt_criteria: Vec::new(),
+            exclude_criteria: Vec::new(),
             tags: default_tags(),
         }
+    }
+
+    /// The include shapes: [`Self::criteria`] (when configured) then
+    /// [`Self::alt_criteria`]. Empty for a wildcard.
+    pub fn include_shapes(&self) -> impl Iterator<Item = &Criteria> {
+        std::iter::once(&self.criteria).filter(|c| !c.is_empty()).chain(self.alt_criteria.iter())
+    }
+
+    /// Every configured shape, include and exclude — for a reader that needs each
+    /// axis the fingerprint names (the name-reuse build list).
+    pub fn all_shapes(&self) -> impl Iterator<Item = &Criteria> {
+        self.include_shapes().chain(self.exclude_criteria.iter())
+    }
+
+    /// The builds (exact `ix_labels` sequences) whose launches the
+    /// `name_reuse_count` axis counts: one per shape that reads that axis and pins
+    /// a label sequence. The one reader, for the engine reload and both primers.
+    pub fn name_reuse_builds(&self) -> impl Iterator<Item = &[String]> {
+        self.all_shapes()
+            .filter(|c| c.contains(AxisId::NameReuseCount))
+            .filter_map(|c| match c.get(AxisId::IxLabels) {
+                Some(AxisPredicate::Sequence { labels }) => Some(labels.as_slice()),
+                _ => None,
+            })
+    }
+
+    /// Whether the fingerprint has more than the single-shape form — an alternative
+    /// include shape or any exclusion. A reader that understands only one `Criteria`
+    /// (an SQL pre-filter, a group-key match) checks this before trusting `criteria`.
+    pub fn is_multi_shape(&self) -> bool {
+        !self.alt_criteria.is_empty() || !self.exclude_criteria.is_empty()
+    }
+
+    /// Store the shape lists in their one canonical order: every include shape
+    /// sorted and de-duplicated, the first in `criteria` and the rest in
+    /// `alt_criteria`; the exclude shapes sorted and de-duplicated. Empty shapes
+    /// are kept so [`Self::problems`] can name them rather than silently widen the
+    /// row. The write edge calls this; [`Self::problems`] refuses a row that skipped it.
+    pub fn canonicalize(&mut self) {
+        if !self.alt_criteria.is_empty() && !self.criteria.is_empty() {
+            let mut all = std::mem::take(&mut self.alt_criteria);
+            all.push(std::mem::take(&mut self.criteria));
+            let mut all = canonical_shapes(all).into_iter();
+            self.criteria = all.next().unwrap_or_default();
+            self.alt_criteria = all.collect();
+        }
+        self.exclude_criteria = canonical_shapes(std::mem::take(&mut self.exclude_criteria));
     }
 
     /// Whether any matchable criterion is configured. The matcher requires at least
@@ -95,16 +174,18 @@ impl Fingerprint {
     /// Whether anything resolves at creation. A wildcard counts: it answers for
     /// every token immediately and waits on nothing.
     pub fn has_instant_criterion(&self) -> bool {
-        self.wildcard || self.criteria.has_instant()
+        self.wildcard || self.include_shapes().any(Criteria::has_instant)
     }
 
     /// Whether any configured axis defers to the settled creation slot. The producer
     /// reads this to decide whether an instant match must still wait for
     /// `FirstSlotSettled` before it fully resolves.
     ///
-    /// A wildcard never defers — it has no axis to wait for.
+    /// A wildcard include waits for nothing, but an exclude shape with a deferred
+    /// axis still does: until the slot settles it cannot say whether it rejects.
     pub fn has_first_slot_criteria(&self) -> bool {
-        !self.wildcard && self.criteria.has_deferred()
+        (!self.wildcard && self.include_shapes().any(Criteria::has_deferred))
+            || self.exclude_criteria.iter().any(Criteria::has_deferred)
     }
 
     /// Every way this fingerprint is unusable, as operator-facing sentences.
@@ -123,14 +204,44 @@ impl Fingerprint {
         // A wildcard already answers the match for every token, so an axis beside it
         // is a contradiction the matcher resolves silently in favour of the wildcard
         // — the operator would read the axes and expect them to narrow it.
-        if self.wildcard && !self.criteria.is_empty() {
+        if self.wildcard && (!self.criteria.is_empty() || !self.alt_criteria.is_empty()) {
             out.push(
                 "a wildcard fingerprint matches every token, so it cannot also carry match \
                  axes — clear the axes or turn the wildcard off"
                     .into(),
             );
         }
+        if !self.wildcard && self.criteria.is_empty() && !self.alt_criteria.is_empty() {
+            out.push("the first include shape is empty — remove it or give it an axis".into());
+        }
         out.extend(self.criteria.problems());
+        for (i, shape) in self.alt_criteria.iter().enumerate() {
+            let label = shape_label(i + 1);
+            if shape.is_empty() {
+                out.push(format!("include shape {label} configures no axis — give it one or remove it"));
+            }
+            out.extend(shape.problems().into_iter().map(|p| format!("include shape {label}: {p}")));
+        }
+        for (i, shape) in self.exclude_criteria.iter().enumerate() {
+            let label = format!("X{}", i + 1);
+            if shape.is_empty() {
+                out.push(format!(
+                    "exclude shape {label} configures no axis, so it would exclude every token — \
+                     give it an axis or remove it"
+                ));
+            }
+            out.extend(shape.problems().into_iter().map(|p| format!("exclude shape {label}: {p}")));
+        }
+        // A stored order other than the canonical one is a second spelling of the
+        // same token set, which `find_or_create` would fork into a second row.
+        let mut canonical = self.clone();
+        canonical.canonicalize();
+        if canonical.criteria != self.criteria
+            || canonical.alt_criteria != self.alt_criteria
+            || canonical.exclude_criteria != self.exclude_criteria
+        {
+            out.push("the shape lists are not in canonical order (sorted, no duplicates)".into());
+        }
         out
     }
 
@@ -141,6 +252,16 @@ impl Fingerprint {
             None => Ok(()),
             Some(first) => Err(first.clone()),
         }
+    }
+}
+
+/// An include shape's operator-facing letter: `A` is [`Fingerprint::criteria`], `B`
+/// onwards the [`Fingerprint::alt_criteria`]. Exclude shapes read `X1`, `X2`, ...
+/// Mirrored by the TS editor's shape labels.
+fn shape_label(index: usize) -> String {
+    match u8::try_from(index).ok().filter(|i| *i < 26) {
+        Some(i) => char::from(b'A' + i).to_string(),
+        None => format!("#{}", index + 1),
     }
 }
 
@@ -164,17 +285,29 @@ pub fn matches_phase(fp: &Fingerprint, tf: &TokenFingerprint, phase: MatchPhase)
     if !fp.has_any_criterion() {
         return false;
     }
-    // A wildcard short-circuits every axis, including deferred ones — there is
-    // nothing to wait for, so it resolves in the instant phase.
-    if fp.wildcard {
-        return true;
-    }
-    fp.criteria.iter().all(|(id, pred)| {
+    // A wildcard include short-circuits every axis, including deferred ones — there
+    // is nothing to wait for, so it resolves in the instant phase.
+    let included = fp.wildcard || fp.include_shapes().any(|c| shape_matches(c, tf, phase));
+    included && !fp.exclude_criteria.iter().any(|c| shape_excludes(c, tf, phase))
+}
+
+/// One shape: every configured axis holds. At [`MatchPhase::Instant`] a deferred
+/// axis is not yet knowable and passes — it is judged at `Full`.
+fn shape_matches(shape: &Criteria, tf: &TokenFingerprint, phase: MatchPhase) -> bool {
+    shape.iter().all(|(id, pred)| {
         if phase == MatchPhase::Instant && id.is_deferred() {
-            return true; // not yet knowable — judged at Full
+            return true;
         }
         axis_matches(id, pred, tf)
     })
+}
+
+/// Whether an exclude shape rejects the token. It rejects only what it has fully
+/// judged: at `Instant` a shape with a deferred axis is undecided, and the
+/// fingerprint is pending anyway ([`Fingerprint::has_first_slot_criteria`]), so the
+/// `Full` phase decides. An unknown value fails the shape, so it does not reject.
+fn shape_excludes(shape: &Criteria, tf: &TokenFingerprint, phase: MatchPhase) -> bool {
+    (phase == MatchPhase::Full || !shape.has_deferred()) && shape_matches(shape, tf, MatchPhase::Full)
 }
 
 /// One axis of the match. A configured axis with no observed value fails: this is
@@ -419,6 +552,112 @@ mod tests {
         };
         let hits = match_all(&[a.clone(), b, c.clone(), d.clone()], &tf, MatchPhase::Full);
         assert_eq!(hits.as_slice(), &[a.id, c.id, d.id]);
+    }
+
+    fn shape(axis: AxisId, pred: AxisPredicate) -> Criteria {
+        Criteria::new().with(axis, pred)
+    }
+
+    fn labels(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("ix{i}")).collect()
+    }
+
+    /// The whitelist: `(5ix · cu_limit=400K) OR (4ix · init=1)`. A token passes on
+    /// either shape, and a token half-matching both passes on neither.
+    #[test]
+    fn a_token_passes_on_any_include_shape() {
+        let mut fp = blank_fp();
+        fp.criteria = Criteria::new()
+            .with(AxisId::IxCount, AxisPredicate::exact(5))
+            .with(AxisId::CuLimit, AxisPredicate::exact(400_000));
+        fp.alt_criteria = vec![Criteria::new()
+            .with(AxisId::IxCount, AxisPredicate::exact(4))
+            .with(AxisId::InitBuyLamports, AxisPredicate::exact(SOL))];
+        fp.canonicalize();
+        assert!(fp.validate().is_ok(), "{:?}", fp.problems());
+        let tf = |n: usize, cu: u64, init: u64| TokenFingerprint {
+            ix_labels: labels(n),
+            cu_limit: Some(cu),
+            init_buy_lamports: Some(init),
+            ..Default::default()
+        };
+        assert!(matches(&fp, &tf(5, 400_000, 7)), "shape A");
+        assert!(matches(&fp, &tf(4, 1, SOL as u64)), "shape B");
+        assert!(!matches(&fp, &tf(5, 200_000, SOL as u64)), "5ix but not A's cu_limit");
+        assert!(!matches(&fp, &tf(6, 400_000, SOL as u64)), "neither");
+    }
+
+    /// The blacklist: every token except 7ix.
+    #[test]
+    fn a_wildcard_minus_an_exclude_shape_is_everything_else() {
+        let mut fp = Fingerprint { wildcard: true, ..blank_fp() };
+        fp.exclude_criteria = vec![shape(AxisId::IxCount, AxisPredicate::exact(7))];
+        assert!(fp.validate().is_ok(), "{:?}", fp.problems());
+        let tf = |n: usize| TokenFingerprint { ix_labels: labels(n), ..Default::default() };
+        assert!(matches(&fp, &tf(5)) && matches(&fp, &tf(6)));
+        assert!(!matches(&fp, &tf(7)));
+        assert!(!matches_phase(&fp, &tf(7), MatchPhase::Instant), "an instant exclusion rejects at once");
+        // An unknown value cannot be shown to be the excluded shape, so it passes.
+        let unknown = Fingerprint { exclude_criteria: vec![shape(AxisId::CuLimit, AxisPredicate::exact(1))], ..fp };
+        assert!(matches(&unknown, &TokenFingerprint::default()));
+    }
+
+    #[test]
+    fn an_exclude_shape_narrows_an_include_shape() {
+        let mut fp = with(AxisId::IxCount, AxisPredicate::exact(5));
+        fp.exclude_criteria = vec![Criteria::new()
+            .with(AxisId::IxCount, AxisPredicate::exact(5))
+            .with(AxisId::CuPrice, AxisPredicate::exact(250_000))];
+        let tf = |price: u64| TokenFingerprint {
+            ix_labels: labels(5),
+            cu_price: Some(price),
+            ..Default::default()
+        };
+        assert!(matches(&fp, &tf(1)));
+        assert!(!matches(&fp, &tf(250_000)));
+    }
+
+    /// A deferred axis in an exclude shape makes even a wildcard wait: until the
+    /// slot settles the shape cannot say whether it rejects.
+    #[test]
+    fn a_deferred_exclude_shape_defers_the_whole_fingerprint() {
+        let mut fp = Fingerprint { wildcard: true, ..blank_fp() };
+        assert!(!fp.has_first_slot_criteria());
+        fp.exclude_criteria = vec![shape(AxisId::FirstSlotBuyLamports, AxisPredicate::range(Some(SOL), None))];
+        assert!(fp.has_first_slot_criteria());
+        let pending = TokenFingerprint::default();
+        assert!(matches_phase(&fp, &pending, MatchPhase::Instant), "undecided at creation");
+        let big = TokenFingerprint { first_slot_buy_lamports: Some(2 * SOL as u64), ..Default::default() };
+        assert!(!matches_phase(&fp, &big, MatchPhase::Full));
+        let small = TokenFingerprint { first_slot_buy_lamports: Some(1), ..Default::default() };
+        assert!(matches_phase(&fp, &small, MatchPhase::Full));
+    }
+
+    /// Two orders of the same shapes are one stored row, and a hand-written row in
+    /// another order is refused rather than normalised on read.
+    #[test]
+    fn shape_lists_have_one_canonical_order() {
+        let a = shape(AxisId::IxCount, AxisPredicate::exact(5));
+        let b = shape(AxisId::IxCount, AxisPredicate::exact(4));
+        let mut one = Fingerprint { criteria: a.clone(), alt_criteria: vec![b.clone(), a.clone()], ..blank_fp() };
+        let mut two = Fingerprint { criteria: b.clone(), alt_criteria: vec![a.clone()], ..blank_fp() };
+        assert!(two.validate().is_err() || one.validate().is_err(), "at most one order is canonical");
+        one.canonicalize();
+        two.canonicalize();
+        assert_eq!(one, two);
+        assert_eq!(one.alt_criteria.len(), 1, "the duplicate is dropped");
+        assert!(one.validate().is_ok());
+    }
+
+    #[test]
+    fn malformed_shape_lists_are_named() {
+        let five = shape(AxisId::IxCount, AxisPredicate::exact(5));
+        let wild_alt = Fingerprint { wildcard: true, alt_criteria: vec![five.clone()], ..blank_fp() };
+        assert!(wild_alt.validate().is_err(), "a wildcard carries no include shape");
+        let empty_exclude = Fingerprint { exclude_criteria: vec![Criteria::new()], ..with(AxisId::IxCount, AxisPredicate::exact(4)) };
+        assert!(empty_exclude.validate().is_err(), "an empty exclude shape would reject everything");
+        let only_exclude = Fingerprint { exclude_criteria: vec![five], ..blank_fp() };
+        assert!(only_exclude.validate().is_err(), "nothing included");
     }
 
     #[test]

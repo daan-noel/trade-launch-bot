@@ -598,6 +598,9 @@ pub async fn get_grouped_creation_stats(
             }
             Err(e) => return db_error(e),
         };
+        if let Some(refused) = refuse_multi_shape_scope(&fp) {
+            return refused;
+        }
         let filter = StatsFilter { tz: &tz, maturity_secs: 0.0, from, to, mayhem, cashback };
         let data = match repo.grouped_scoped(&fp, bucket, filter).await {
             Ok(d) => d,
@@ -866,6 +869,9 @@ pub async fn get_grouped_creation_tokens(
             }
             Err(e) => return db_error(e),
         };
+        if let Some(refused) = refuse_multi_shape_scope(&fp) {
+            return refused;
+        }
         crate::storage::repositories::creation_stats_repo::build_grouped_tokens_where_scoped(
             &fp,
             dow,
@@ -967,6 +973,18 @@ pub async fn get_grouped_creation_tokens(
     let items: Vec<TokenSummary> = rows.into_iter().map(TokenSummary::from).collect();
 
     HttpResponse::Ok().json(GroupedCreationTokensResponse { total, items })
+}
+
+/// The saved-fingerprint scope lowers ONE axis map to SQL, so a multi-shape row
+/// (several include shapes, or exclusions) would be read as its first shape alone —
+/// a different corpus than the engine matches. Refused by name instead.
+fn refuse_multi_shape_scope(fp: &crate::models::Fingerprint) -> Option<HttpResponse> {
+    fp.is_multi_shape().then(|| {
+        HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "this fingerprint has several include or exclude shapes; \
+                      creation stats scope a single-shape fingerprint only"
+        }))
+    })
 }
 
 fn db_error(e: anyhow::Error) -> HttpResponse {

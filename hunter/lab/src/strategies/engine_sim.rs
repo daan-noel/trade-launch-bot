@@ -631,7 +631,18 @@ fn candidate_cache_key(
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
 ) -> AnalysisCacheKey {
-    AnalysisCacheKey::new("engine", fp.id.0.to_string(), since, until)
+    AnalysisCacheKey::new("engine", fp_cache_key(fp), since, until)
+}
+
+/// A fingerprint's cache identity: its id AND what it matches. The id alone would
+/// serve the pre-edit token set for the whole TTL after a shape or axis edit.
+fn fp_cache_key(fp: &EngineFingerprint) -> String {
+    use std::hash::{Hash, Hasher};
+    let identity = serde_json::json!([fp.wildcard, fp.criteria, fp.alt_criteria, fp.exclude_criteria]);
+    // In-process cache only, so the std hasher's per-build seed is fine.
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    identity.to_string().hash(&mut h);
+    format!("{}:{:016x}", fp.id.0, h.finish())
 }
 
 /// History-cache key — distinct from the candidate key when `with_flow` so a
@@ -649,7 +660,7 @@ fn history_cache_key(
         (false, true) => "engine+curve",
         (false, false) => "engine",
     };
-    AnalysisCacheKey::new(strategy, fp.id.0.to_string(), since, until)
+    AnalysisCacheKey::new(strategy, fp_cache_key(fp), since, until)
 }
 
 /// True when the rule reads anything that needs the lake's wallet / label columns: a
@@ -668,43 +679,39 @@ fn rule_reads_holder_book(loaded: &LoadedRule) -> bool {
     hunter_engine::arm::CompiledRule::compile(loaded).buffers.holder_book
 }
 
-/// Every creation of the fingerprint's build over `[since - window, until)`, for the
-/// `name_reuse_count` tally - empty unless the fingerprint reads that axis and
-/// names its build. Rows are `(build, identity, created_at, mint hash)`; a token with a
-/// blank name or symbol has no identity and is left out, as the engine leaves it.
+/// Every creation of the fingerprint's builds over `[since - window, until)`, for the
+/// `name_reuse_count` tally - empty unless a shape of the fingerprint reads that axis
+/// and names its build. Rows are `(build, identity, created_at, mint hash)`; a token
+/// with a blank name or symbol has no identity and is left out, as the engine leaves it.
 pub(crate) async fn load_identity_rows(
     app_state: &Arc<LocalState>,
     fp: &EngineFingerprint,
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
 ) -> Arc<[replay::IdentityLaunchRow]> {
-    use hunter_engine::fingerprint::{AxisId, AxisPredicate};
-    let labels = match (
-        fp.criteria.get(AxisId::NameReuseCount),
-        fp.criteria.get(AxisId::IxLabels),
-    ) {
-        (Some(_), Some(AxisPredicate::Sequence { labels })) => labels.clone(),
-        _ => return Arc::from(Vec::new()),
-    };
+    let mut builds: Vec<&[String]> = fp.name_reuse_builds().collect();
+    builds.sort_unstable();
+    builds.dedup();
     let window = chrono::Duration::days(
         hunter_engine::fingerprint::identity_launches::NAME_REUSE_WINDOW_DAYS,
     );
     let from = since.unwrap_or(DateTime::UNIX_EPOCH) - window;
     let to = until.unwrap_or_else(Utc::now);
-    let build = hunter_engine::metrics::trade_keys::ix_hash(&labels);
-    match TokenRepo::new(app_state.batch_db.clone()).build_identity_rows(&labels, from, to).await {
-        Ok(rows) => rows
-            .into_iter()
-            .filter_map(|(mint, name, symbol, at)| {
+    let repo = TokenRepo::new(app_state.batch_db.clone());
+    let mut out = Vec::new();
+    for labels in builds {
+        let build = hunter_engine::metrics::trade_keys::ix_hash(labels);
+        match repo.build_identity_rows(labels, from, to).await {
+            Ok(rows) => out.extend(rows.into_iter().filter_map(|(mint, name, symbol, at)| {
                 let id = hunter_engine::token_identity_hash(&name, &symbol)?;
                 Some((build, id, at, hunter_engine::metrics::trade_keys::wallet_hash(&mint)))
-            })
-            .collect(),
-        Err(e) => {
-            tracing::warn!(error = %e, "name_reuse_count unprimed - the axis counts corpus tokens only");
-            Arc::from(Vec::new())
+            })),
+            Err(e) => {
+                tracing::warn!(error = %e, "name_reuse_count unprimed - the axis counts corpus tokens only");
+            }
         }
     }
+    Arc::from(out)
 }
 
 /// The rows as the engine's own tally, for the offline stamp; `None` when empty.

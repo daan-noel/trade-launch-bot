@@ -564,6 +564,34 @@ mirror counts the same window off `tokens`.
 Design + rationale:
 [fingerprint-ranges.md](../plans/strategies/fingerprint-ranges.md).
 
+### Include and exclude shapes
+
+A **shape** is one criteria map (every axis in it must hold). A fingerprint matches
+`(wildcard OR any include shape) AND NOT any exclude shape`:
+
+| Field | Column | Meaning |
+| --- | --- | --- |
+| `criteria` | `criteria` | the first include shape |
+| `alt_criteria` | `alt_criteria` (JSON array) | further include shapes; never beside `wildcard` |
+| `exclude_criteria` | `exclude_criteria` (JSON array) | a token matching any is rejected; allowed beside `wildcard` |
+
+- A one-shape row with no exclusions is the plain criteria row, so every older row,
+  `RunConfigSig` and rule bundle reads unchanged.
+- **Canonical order:** `Fingerprint::canonicalize` sorts and de-duplicates the include
+  shapes (the first lands in `criteria`) and the exclude shapes; `problems()` refuses a
+  row in any other order, so one token set is one row and `IDENTITY_WHERE` stays a
+  `jsonb` equality over all five identity columns.
+- **An exclude shape rejects only what it has fully judged.** An unknown value fails the
+  shape, so the token is not excluded. An exclude shape with a deferred axis makes the
+  whole fingerprint `PendingFirstSlot` (even a wildcard), and `Full` decides.
+- Matching cost is per token at creation only; the per-trade path is untouched, and it
+  is still one fingerprint per rule, so no extra `TagState`.
+- Readers that lower ONE axis map (the creation-stats SQL scope, sweep promotion from a
+  scope fingerprint, the frontend group-key match) refuse or skip a multi-shape row
+  (`is_multi_shape`) rather than read its first shape alone.
+- Auto-name: shapes join with ` | `, exclusions follow ` - `
+  (`ix_count=4 | ix_count=5 - ix_count=7`, `ALL - ix_count=7`).
+
 ## Tag authoring (lab)
 
 A tag is a list, not a meaning: `volume` (the dev's volume-making trades), `dump` (the

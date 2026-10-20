@@ -55,6 +55,8 @@ fn probe_fp() -> Fingerprint {
         id: FingerprintId(Uuid::from_u128(FP)),
         wildcard: true,
         criteria: Criteria::new(),
+        alt_criteria: Vec::new(),
+        exclude_criteria: Vec::new(),
         tags: json!({
             "volume": { "match": { "ix_shape": [VOL_LABELS], "creator": true }, "sticky": true },
             "dump": { "match": { "ix_shape": [NONVOL_LABELS] } },

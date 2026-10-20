@@ -1056,7 +1056,8 @@ DROP TABLE IF EXISTS _ec2_sync_seen_ids;
 -- columns whose values the local `fingerprints_has_a_criterion` /
 -- `fingerprints_wildcard_excludes_axes` CHECKs would reject anyway.
 --
--- SECOND unique key: `fingerprints_identity_uniq` (criteria, wildcard, tags).
+-- SECOND unique key: `fingerprints_identity_uniq` (criteria, alt_criteria,
+-- exclude_criteria, wildcard, tags).
 -- ON CONFLICT (id) resolves only the PK, so a lab-authored fingerprint matching a
 -- server one under a different id would abort the whole insert on the secondary key.
 -- Both sides run find_or_create against the same identity, so this is reachable, not
@@ -1077,6 +1078,8 @@ SELECT l.id AS local_id, r.id AS server_id
 FROM fingerprints l
 JOIN ec2_sync_src.fingerprints r
   ON md5(l.criteria::text) = md5(r.criteria::text)
+ AND md5(l.alt_criteria::text) = md5(r.alt_criteria::text)
+ AND md5(l.exclude_criteria::text) = md5(r.exclude_criteria::text)
  AND l.wildcard = r.wildcard
  AND md5(l.tags::text) = md5(r.tags::text)
 WHERE l.id <> r.id;

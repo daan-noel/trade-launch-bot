@@ -1207,11 +1207,8 @@ async fn reload_rules(
     );
     let identity_builds: Vec<Vec<String>> = engine_fps
         .iter()
-        .filter(|f| f.criteria.get(hunter_engine::fingerprint::AxisId::NameReuseCount).is_some())
-        .filter_map(|f| match f.criteria.get(hunter_engine::fingerprint::AxisId::IxLabels) {
-            Some(hunter_engine::fingerprint::AxisPredicate::Sequence { labels }) => Some(labels.clone()),
-            _ => None,
-        })
+        .flat_map(hunter_engine::fingerprint::Fingerprint::name_reuse_builds)
+        .map(<[String]>::to_vec)
         .collect();
     let _ = reduce(
         state,
@@ -1383,7 +1380,7 @@ mod tests {
         cache.insert(MINT.into(), cached);
         let mut producer = Producer::new(Arc::new(cache), now);
 
-        let fp = Fingerprint { id: FingerprintId(Uuid::from_u128(0xF)), wildcard: true, criteria: Criteria::new(), tags: json!({}) };
+        let fp = Fingerprint { id: FingerprintId(Uuid::from_u128(0xF)), wildcard: true, criteria: Criteria::new(), alt_criteria: Vec::new(), exclude_criteria: Vec::new(), tags: json!({}) };
         let rule = LoadedRule {
             id: RuleId(Uuid::from_u128(1)),
             fingerprint_id: fp.id,

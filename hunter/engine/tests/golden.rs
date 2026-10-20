@@ -42,6 +42,8 @@ fn cu_fp(id: u128) -> Fingerprint {
         wildcard: false,
         criteria: Criteria::new()
             .with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
+        alt_criteria: Vec::new(),
+        exclude_criteria: Vec::new(),
         tags: serde_json::json!({}),
     }
 }
@@ -2215,6 +2217,8 @@ fn prior_identity_launches_counts_the_build_s_earlier_same_name_launches() {
         criteria: Criteria::new()
             .with(AxisId::IxLabels, AxisPredicate::Sequence { labels: labels.clone() })
             .with(AxisId::NameReuseCount, AxisPredicate::Range { min: Some(1), max: None }),
+        alt_criteria: Vec::new(),
+        exclude_criteria: Vec::new(),
         tags: serde_json::json!({}),
     };
     let token = |ix: &[String]| Box::new(TokenFingerprint { ix_labels: ix.to_vec(), ..Default::default() });
@@ -2360,6 +2364,8 @@ fn copy_fp() -> Fingerprint {
         id: fid(1),
         wildcard: true,
         criteria: Criteria::new(),
+        alt_criteria: Vec::new(),
+        exclude_criteria: Vec::new(),
         tags: json!({ "targets": { "match": { "wallet": ["leader", "other"] } } }),
     }
 }

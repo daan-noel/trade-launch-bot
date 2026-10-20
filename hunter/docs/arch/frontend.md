@@ -682,10 +682,17 @@ next load (no per-metric frontend work).
   `AxisConditionInput`, a condition expression (`3`, `1..5`, `>=2`, `!=3`,
   `<=2 | >=7`) read through `fingerprintGrammar`, the TS mirror of the Rust
   grammar, echoed as the predicate it parsed to and snapped to the canonical
-  spelling on blur. The form lists only axes that are set; Add axis reveals another,
-  and removing one clears it so a blank axis is not part of the match. The form auto-fills `Fingerprint::auto_name` from the axes
-  (`3ix:Buy · max=1 · bkt=1`) and keeps a typed nickname; pickers search axis text
-  and show the chip row in the dropdown.
+  spelling on blur. The editor modal is `xxl`: "Used by" on top (capped at two card
+  rows, the rest scrolls), "Which coins" on the left, tags on the right. Which coins
+  is a Match toggle (All tokens / Only these shapes), an **Include** list (a token
+  matching ANY shape passes) and an **Exclude** list (a token matching ANY shape is
+  skipped), each a list of shape cards (`ShapeCard`, every axis in a card must hold)
+  with `+ add shape` and `+ copy from fingerprint` (a copy of that fingerprint's
+  include shapes, never a link). A card lists only axes that are set; Add axis reveals
+  another, and removing one clears it so a blank axis is not part of the shape. The form auto-fills `Fingerprint::auto_name` from the shapes
+  (`3ix:Buy · max=1`, `A | B - X`) and keeps a typed nickname; pickers search axis text
+  and show the chip row in the dropdown (include shapes joined by "or", exclude shapes
+  after "except").
   `RulesView`/`FingerprintsView` (shared list+editor, mounted by both apps'
   `RulesPage`/`FingerprintsPage`; the lab page passes `onViewMatches`, which puts a
   chart row-action on every fingerprint opening its **matched tokens** dashboard —

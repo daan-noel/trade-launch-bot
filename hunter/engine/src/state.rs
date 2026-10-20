@@ -592,13 +592,8 @@ impl EngineState {
         self.identity_builds = self
             .fps
             .iter()
-            .filter(|f| f.criteria.get(crate::fingerprint::AxisId::NameReuseCount).is_some())
-            .filter_map(|f| match f.criteria.get(crate::fingerprint::AxisId::IxLabels) {
-                Some(crate::fingerprint::AxisPredicate::Sequence { labels }) => {
-                    crate::metrics::trade_keys::ix_hash_opt(labels)
-                }
-                _ => None,
-            })
+            .flat_map(Fingerprint::name_reuse_builds)
+            .filter_map(crate::metrics::trade_keys::ix_hash_opt)
             .collect();
 
         let mut horizons = ClockHorizons::default();
@@ -707,6 +702,8 @@ mod tests {
             id: fp_id(n),
             wildcard: false,
             criteria: Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000 + n)),
+            alt_criteria: Vec::new(),
+            exclude_criteria: Vec::new(),
             tags: json!({ "volume": { "match": { "ix_shape": [["Pump.Fun: Buy"]] } } }),
         }
     }

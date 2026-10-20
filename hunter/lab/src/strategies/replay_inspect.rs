@@ -486,6 +486,8 @@ mod tests {
     fn fp(id: u128) -> EngineFingerprint {
         EngineFingerprint {
             id: FingerprintId(Uuid::from_u128(id)),
+            alt_criteria: Vec::new(),
+            exclude_criteria: Vec::new(),
             tags: serde_json::json!({}),
             wildcard: false,
             criteria: Criteria::new()

@@ -1151,6 +1151,8 @@ mod tests {
     fn first_slot_settles_at_created_when_create_slot_is_empty() {
         let fps = [EngineFingerprint {
             id: FingerprintId(Uuid::from_u128(1)),
+            alt_criteria: Vec::new(),
+            exclude_criteria: Vec::new(),
             tags: serde_json::json!({}),
             wildcard: false,
             criteria: Criteria::new()
@@ -1193,6 +1195,8 @@ mod tests {
     fn fp(id: u128) -> EngineFingerprint {
         EngineFingerprint {
             id: FingerprintId(Uuid::from_u128(id)),
+            alt_criteria: Vec::new(),
+            exclude_criteria: Vec::new(),
             tags: serde_json::json!({}),
             wildcard: false,
             criteria: Criteria::new()

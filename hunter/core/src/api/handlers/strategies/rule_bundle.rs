@@ -87,8 +87,8 @@ const IMPORT_TRADE_MODE: &str = "paper";
 // Wire shapes
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// One fingerprint as it travels. Identity (`criteria` + `wildcard` +
-/// `tags`) plus the label, and `updated_at` so the preview can say which
+/// One fingerprint as it travels. Identity (`criteria` + `alt_criteria` +
+/// `exclude_criteria` + `wildcard` + `tags`) plus the label, and `updated_at` so the preview can say which
 /// side is older.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleFingerprint {
@@ -99,6 +99,12 @@ pub struct BundleFingerprint {
     pub wildcard: bool,
     #[serde(default)]
     pub criteria: Value,
+    /// Further include shapes and the exclude shapes (arrays of `criteria`
+    /// objects). Absent in an older bundle, which is the single-shape row.
+    #[serde(default, skip_serializing_if = "is_empty_list")]
+    pub alt_criteria: Value,
+    #[serde(default, skip_serializing_if = "is_empty_list")]
+    pub exclude_criteria: Value,
     /// The fingerprint's trade tags. A v1 bundle carries `metric_config` instead,
     /// converted on import.
     #[serde(default = "empty_object", alias = "metric_config")]
@@ -140,6 +146,12 @@ pub struct RuleBundle {
 
 fn empty_object() -> Value {
     json!({})
+}
+
+/// A shape list that says nothing — absent, `null` or `[]` — stays off the wire, so a
+/// single-shape fingerprint exports exactly as it did before shape lists existed.
+fn is_empty_list(v: &Value) -> bool {
+    v.is_null() || v.as_array().is_some_and(Vec::is_empty)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -290,6 +302,8 @@ pub async fn export_bundle(
             name: fp.name.clone(),
             wildcard: fp.wildcard,
             criteria: serde_json::to_value(&fp.criteria)?,
+            alt_criteria: serde_json::to_value(&fp.alt_criteria)?,
+            exclude_criteria: serde_json::to_value(&fp.exclude_criteria)?,
             tags: fp.tags.clone(),
             updated_at: fp.updated_at,
         });
@@ -397,6 +411,8 @@ fn incoming_fingerprint(b: &BundleFingerprint) -> Result<Fingerprint, String> {
         "name": b.name,
         "wildcard": b.wildcard,
         "criteria": hunter_engine::v1::convert_criteria(&b.criteria),
+        "alt_criteria": b.alt_criteria,
+        "exclude_criteria": b.exclude_criteria,
         "tags": tags,
     });
     // Timestamps are the target box's, never the bundle's: `created_at` is when the
@@ -485,6 +501,18 @@ fn fingerprint_changes(local: &Fingerprint, incoming: &Fingerprint) -> Vec<Field
         "criteria",
         serde_json::to_value(&local.criteria).unwrap_or(Value::Null),
         serde_json::to_value(&incoming.criteria).unwrap_or(Value::Null),
+    );
+    push_change(
+        &mut out,
+        "alt_criteria",
+        serde_json::to_value(&local.alt_criteria).unwrap_or(Value::Null),
+        serde_json::to_value(&incoming.alt_criteria).unwrap_or(Value::Null),
+    );
+    push_change(
+        &mut out,
+        "exclude_criteria",
+        serde_json::to_value(&local.exclude_criteria).unwrap_or(Value::Null),
+        serde_json::to_value(&incoming.exclude_criteria).unwrap_or(Value::Null),
     );
     push_change(
         &mut out,
@@ -870,6 +898,8 @@ mod tests {
             name: name.into(),
             wildcard: false,
             criteria,
+            alt_criteria: Value::Null,
+            exclude_criteria: Value::Null,
             tags,
             updated_at: Utc::now(),
         }

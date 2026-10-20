@@ -26,6 +26,8 @@ fn fp() -> Fingerprint {
         id: FingerprintId(Uuid::from_u128(0xF)),
         wildcard: false,
         criteria: Criteria::new().with(AxisId::CuLimit, AxisPredicate::exact(200_000)),
+        alt_criteria: Vec::new(),
+        exclude_criteria: Vec::new(),
         tags: json!({}),
     }
 }

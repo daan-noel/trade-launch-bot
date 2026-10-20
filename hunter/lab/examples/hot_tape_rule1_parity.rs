@@ -132,6 +132,8 @@ async fn main() {
         id: fp_id,
         wildcard: true,
         criteria: Criteria::new(),
+        alt_criteria: Vec::new(),
+        exclude_criteria: Vec::new(),
         tags: serde_json::json!({}),
     };
 

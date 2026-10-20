@@ -59,6 +59,8 @@ fn broad_fp() -> Fingerprint {
         wildcard: false,
         criteria: Criteria::new()
             .with(AxisId::CuLimit, AxisPredicate::exact(u128::from(FP_CU))),
+        alt_criteria: Vec::new(),
+        exclude_criteria: Vec::new(),
         tags: serde_json::json!({}),
     }
 }

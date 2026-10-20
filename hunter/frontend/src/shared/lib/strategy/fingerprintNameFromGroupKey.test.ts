@@ -147,3 +147,30 @@ describe('the auto-name grammar', () => {
     expect(isGeneratedAutoName(WILDCARD_NAME)).toBe(true);
   });
 });
+
+// Byte-equal with Rust `multi_shape_rows_parse_canonical_and_name_themselves`.
+describe('multi-shape auto-name', () => {
+  const ix = (n: string) => ({ ix_count: exactPredicate(n) });
+
+  it('joins include shapes with | and exclude shapes after -', () => {
+    const name = fingerprintAutoName({
+      wildcard: false,
+      criteria: ix('4'),
+      alt_criteria: [ix('5')],
+      exclude_criteria: [ix('7')],
+    });
+    expect(name).toBe('ix_count=4 | ix_count=5 - ix_count=7');
+    expect(isGeneratedAutoName(name)).toBe(true);
+  });
+
+  it('names "every token except" off the wildcard', () => {
+    const name = fingerprintAutoName({ wildcard: true, criteria: {}, exclude_criteria: [ix('7')] });
+    expect(name).toBe('ALL - ix_count=7');
+    expect(isGeneratedAutoName(name)).toBe(true);
+  });
+
+  it('keeps a nickname with a dash a nickname', () => {
+    expect(isGeneratedAutoName('8dtx - GMGN Bot')).toBe(false);
+    expect(isGeneratedAutoName('ix_count=5 - ALL')).toBe(false);
+  });
+});

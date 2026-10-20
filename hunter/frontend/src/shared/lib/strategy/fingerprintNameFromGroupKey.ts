@@ -18,6 +18,7 @@ import {
   type AxisId,
   type AxisPredicate,
   type AxisUnit,
+  type Criteria,
   type Span,
 } from './fingerprintAxes';
 import { WILDCARD_NAME } from './types';
@@ -39,21 +40,44 @@ const SPAN_SEP = '|';
  *  `NOT_PREFIX`. */
 const NOT_PREFIX = '!';
 
+/** Separates the include (or exclude) shapes of a multi-shape name:
+ *  `5ix:Buy · cu_limit=400K | 4ix:Buy`. Mirrors Rust `SHAPE_OR_SEP`. */
+export const SHAPE_OR_SEP = ' | ';
+
+/** Separates the include shapes from the exclude shapes: `ALL - 7ix:Buy`. Mirrors
+ *  Rust `SHAPE_EXCLUDE_SEP`. */
+export const SHAPE_EXCLUDE_SEP = ' - ';
+
 /** Axes the auto-name reads — identity only (`name` is the output). */
-export type FingerprintAutoNameAxes = Pick<FingerprintIdentity, 'wildcard' | 'criteria'>;
+export type FingerprintAutoNameAxes = Pick<
+  FingerprintIdentity,
+  'wildcard' | 'criteria' | 'alt_criteria' | 'exclude_criteria'
+>;
 
 /**
- * Build the auto-name from the configured axes.
+ * Build the auto-name from the configured shapes.
  *
  * One chip per axis in registry order, so an axis added to `AXES` is named without
- * touching this function or its grammar. Unset axes are skipped; nothing to name →
- * `ALL`.
+ * touching this function or its grammar. Unset axes are skipped; a shape with
+ * nothing to name → `ALL`. Several include shapes join with `SHAPE_OR_SEP`, and the
+ * exclude shapes follow `SHAPE_EXCLUDE_SEP`.
  *
  * A wildcard carries no axis, so it names the token set it matches — `ALL`.
  */
 export function fingerprintAutoName(fp: FingerprintAutoNameAxes): string {
-  if (fp.wildcard) return WILDCARD_NAME;
-  const parts = configuredAxes(fp.criteria ?? {})
+  const include = fp.wildcard
+    ? WILDCARD_NAME
+    : [fp.criteria ?? {}, ...(fp.alt_criteria ?? [])].map(shapeName).join(SHAPE_OR_SEP);
+  const exclude = fp.exclude_criteria ?? [];
+  return exclude.length === 0
+    ? include
+    : `${include}${SHAPE_EXCLUDE_SEP}${exclude.map(shapeName).join(SHAPE_OR_SEP)}`;
+}
+
+/** One shape's name: its chips in registry order, or `ALL` when it names nothing.
+ *  Mirrors Rust `shape_name`. */
+function shapeName(c: Criteria): string {
+  const parts = configuredAxes(c)
     .map(([id, pred]) => axisChip(id, pred))
     .filter((p): p is string => p != null);
   return parts.length === 0 ? WILDCARD_NAME : parts.join(AUTO_NAME_SEP);
@@ -137,8 +161,16 @@ export function fingerprintNameFromGroupKey(gk: Record<string, unknown>): string
 export function isGeneratedAutoName(name: string): boolean {
   const n = name.trim();
   if (n === '') return false;
-  if (n === WILDCARD_NAME) return true;
-  return n.split(AUTO_NAME_SEP).every(isAutoNameChip);
+  // `include - exclude`, each side `|`-joined shapes of `·`-joined chips. Only the
+  // include side may be the bare wildcard.
+  const cut = n.indexOf(SHAPE_EXCLUDE_SEP);
+  const include = cut < 0 ? n : n.slice(0, cut);
+  const exclude = cut < 0 ? null : n.slice(cut + SHAPE_EXCLUDE_SEP.length);
+  const shapesOk = (side: string, allowAll: boolean) =>
+    side
+      .split(SHAPE_OR_SEP)
+      .every((s) => (allowAll && s === WILDCARD_NAME) || s.split(AUTO_NAME_SEP).every(isAutoNameChip));
+  return shapesOk(include, true) && (exclude == null || shapesOk(exclude, false));
 }
 
 /** One chip of the {@link isGeneratedAutoName} grammar. **Derived from the

@@ -26,6 +26,8 @@ struct FingerprintDbRow {
     id: Uuid,
     name: String,
     criteria: sqlx::types::Json<Criteria>,
+    alt_criteria: sqlx::types::Json<Vec<Criteria>>,
+    exclude_criteria: sqlx::types::Json<Vec<Criteria>>,
     wildcard: bool,
     tags: sqlx::types::Json<serde_json::Value>,
     created_at: DateTime<Utc>,
@@ -38,6 +40,8 @@ impl From<FingerprintDbRow> for Fingerprint {
             id: r.id,
             name: r.name,
             criteria: r.criteria.0,
+            alt_criteria: r.alt_criteria.0,
+            exclude_criteria: r.exclude_criteria.0,
             wildcard: r.wildcard,
             tags: r.tags.0,
             created_at: r.created_at,
@@ -48,11 +52,13 @@ impl From<FingerprintDbRow> for Fingerprint {
 
 // Explicit column list (struct order) — not `SELECT *`.
 const FINGERPRINT_COLS: &str =
-    "id, name, criteria, wildcard, tags, created_at, updated_at";
+    "id, name, criteria, alt_criteria, exclude_criteria, wildcard, tags, created_at, updated_at";
 
 /// The identity predicate for [`FingerprintRepo::find_or_create`]: the same
-/// criteria, the same wildcard flag and the same `tags`. `name` is a label
-/// and is not identity.
+/// shapes (`criteria`, `alt_criteria`, `exclude_criteria`), the same wildcard flag
+/// and the same `tags`. `name` is a label and is not identity. The shape lists are
+/// stored canonical (`Fingerprint::canonicalize`), so `jsonb` array equality is
+/// set equality.
 ///
 /// One `jsonb` equality replaces the per-axis column chain this used to be --
 /// Postgres normalises `jsonb` key order and numeric text, so the comparison is
@@ -68,7 +74,7 @@ const FINGERPRINT_COLS: &str =
 /// `8dtx - GMGN Bot` carrier and then overwrite that carrier's patterns with the
 /// sweep's, silently reclassifying flow for every rule already bound to it.
 const IDENTITY_WHERE: &str =
-    "criteria = $1::jsonb AND wildcard = $2 AND tags = $3::jsonb";
+    "criteria = $1::jsonb AND alt_criteria = $4::jsonb AND exclude_criteria = $5::jsonb AND wildcard = $2 AND tags = $3::jsonb";
 
 impl FingerprintRepo {
     pub fn new(pool: PgPool) -> Self {
@@ -84,8 +90,9 @@ impl FingerprintRepo {
         let name = stored_name(fp);
         sqlx::query(
             r#"
-            INSERT INTO fingerprints (id, name, criteria, wildcard, tags, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO fingerprints
+                (id, name, criteria, wildcard, tags, created_at, updated_at, alt_criteria, exclude_criteria)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             "#,
         )
         .bind(fp.id)
@@ -95,6 +102,8 @@ impl FingerprintRepo {
         .bind(sqlx::types::Json(&fp.tags))
         .bind(fp.created_at)
         .bind(fp.updated_at)
+        .bind(sqlx::types::Json(&fp.alt_criteria))
+        .bind(sqlx::types::Json(&fp.exclude_criteria))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -113,6 +122,8 @@ impl FingerprintRepo {
                 criteria = $3,
                 wildcard = $4,
                 tags = $5,
+                alt_criteria = $6,
+                exclude_criteria = $7,
                 updated_at = now()
             WHERE id = $1
             "#,
@@ -122,6 +133,8 @@ impl FingerprintRepo {
         .bind(sqlx::types::Json(&fp.criteria))
         .bind(fp.wildcard)
         .bind(sqlx::types::Json(&fp.tags))
+        .bind(sqlx::types::Json(&fp.alt_criteria))
+        .bind(sqlx::types::Json(&fp.exclude_criteria))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -180,6 +193,8 @@ impl FingerprintRepo {
         .bind(sqlx::types::Json(&fp.criteria))
         .bind(fp.wildcard)
         .bind(sqlx::types::Json(&fp.tags))
+        .bind(sqlx::types::Json(&fp.alt_criteria))
+        .bind(sqlx::types::Json(&fp.exclude_criteria))
         .fetch_optional(&self.pool)
         .await?;
         Ok(existing.map(Fingerprint::from))
@@ -251,18 +266,19 @@ fn stored_name(fp: &Fingerprint) -> String {
 mod tests {
     use super::IDENTITY_WHERE;
 
-    /// The migration that creates the identity index, read at compile time.
-    const RANGES_MIGRATION: &str =
-        include_str!("../../../migrations/0009_fingerprint_criteria_ranges.sql");
-    /// Renames the identity column; Postgres carries the index across a rename.
-    const V2_MIGRATION: &str = include_str!("../../../migrations/0021_metric_system_v2.sql");
+    /// The migration that last (re)creates the identity index, read at compile time.
+    const INDEX_MIGRATION: &str =
+        include_str!("../../../migrations/0033_fingerprint_shape_lists.sql");
 
-    /// Columns `IDENTITY_WHERE` compares, in order.
+    /// Columns `IDENTITY_WHERE` compares, sorted: the index is a set of columns and
+    /// the query names them in bind order.
     fn predicate_columns() -> Vec<&'static str> {
-        IDENTITY_WHERE
+        let mut cols: Vec<&str> = IDENTITY_WHERE
             .split(" AND ")
             .map(|clause| clause.split(" = ").next().unwrap().trim())
-            .collect()
+            .collect();
+        cols.sort_unstable();
+        cols
     }
 
     /// Columns `fingerprints_identity_uniq` is built on, in order. The two `jsonb`
@@ -271,19 +287,8 @@ mod tests {
     /// unwrapped here: what must agree is WHICH columns are identity, not how the
     /// index stores them.
     fn index_columns() -> Vec<&'static str> {
-        // `RENAME COLUMN old TO new` pairs a later migration applied to the table.
-        let renames: Vec<(&str, &str)> = V2_MIGRATION
-            .lines()
-            .filter(|l| l.starts_with("ALTER TABLE fingerprints RENAME COLUMN"))
-            .filter_map(|l| {
-                let rest = l.trim_end_matches(';').split("RENAME COLUMN ").nth(1)?;
-                let (old, new) = rest.split_once(" TO ")?;
-                Some((old.trim(), new.trim()))
-            })
-            .collect();
-        let renamed = |c: &'static str| renames.iter().find(|(old, _)| *old == c).map_or(c, |(_, new)| *new);
-        let tail = RANGES_MIGRATION
-            .split_once("fingerprints_identity_uniq")
+        let tail = INDEX_MIGRATION
+            .split_once("CREATE UNIQUE INDEX IF NOT EXISTS fingerprints_identity_uniq")
             .expect("the migration creates the identity index")
             .1;
         let cols = tail
@@ -295,15 +300,17 @@ mod tests {
             .split_once(");")
             .expect("the column list closes")
             .0;
-        cols.split(',')
+        let mut cols: Vec<&str> = cols
+            .split(',')
             .map(|c| {
                 c.trim()
                     .trim_start_matches("md5(")
                     .trim_end_matches(')')
                     .trim_end_matches("::text")
             })
-            .map(renamed)
-            .collect()
+            .collect();
+        cols.sort_unstable();
+        cols
     }
 
     /// The no-DB guard for the one fact stored twice: what makes two fingerprint rows
