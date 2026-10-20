@@ -15,6 +15,7 @@
 use super::{BuyTemplate, PumpFunTrader};
 use crate::error::Result;
 use crate::types::TokenProgram;
+use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::system_instruction;
 use std::collections::hash_map::DefaultHasher;
@@ -59,7 +60,7 @@ impl PumpFunTrader {
         }
     }
 
-    fn build_template(&self, token_program: TokenProgram) -> Result<BuyTemplate> {
+    pub(super) fn build_template(&self, token_program: TokenProgram) -> Result<BuyTemplate> {
         let program_id = token_program.pubkey();
         let seed = self.next_seed();
         let (space, rent) = self.space_rent_for(token_program);
@@ -144,6 +145,28 @@ impl PumpFunTrader {
     }
 }
 
+/// The account-creation prefix a pooled template stands for: the create-with-seed
+/// instruction then the token-account initialize. SSOT for the live snipe buy and
+/// the seeded simulation, so the simulated tx is the one that is sent.
+pub(super) fn seeded_account_ixs(
+    template: BuyTemplate,
+    token_program: TokenProgram,
+    mint: &Pubkey,
+    owner: &Pubkey,
+) -> Result<Vec<Instruction>> {
+    let program_id = token_program.pubkey();
+    let account = &template.user_token_account;
+    let init_ix = match token_program {
+        TokenProgram::Legacy => {
+            spl_token::instruction::initialize_account3(&program_id, account, mint, owner)?
+        }
+        TokenProgram::Token2022 => {
+            spl_token_2022::instruction::initialize_account3(&program_id, account, mint, owner)?
+        }
+    };
+    Ok(vec![template.create_with_seed_ix, init_ix])
+}
+
 /// Build one buy template (a create-account-with-seed instruction + the resulting
 /// token account address) for `program_id`. Shared by the synchronous fill path
 /// ([`PumpFunTrader::build_template`]) and the background replenisher so the
@@ -186,6 +209,26 @@ mod tests {
             vec![Pubkey::new_unique()],
         ));
         PumpFunTrader::new(config)
+    }
+
+    /// The seeded prefix is create-with-seed then initialize on the SAME token
+    /// account, owned by the signer, under the mint's own token program.
+    #[test]
+    fn seeded_prefix_creates_then_initializes_the_template_account() {
+        let t = dummy_trader();
+        let owner = t.config.signer.pubkey();
+        let mint = Pubkey::new_unique();
+        for program in [TokenProgram::Legacy, TokenProgram::Token2022] {
+            let template = t.build_template(program).unwrap();
+            let account = template.user_token_account;
+            let ixs = seeded_account_ixs(template, program, &mint, &owner).unwrap();
+            assert_eq!(ixs.len(), 2);
+            assert_eq!(ixs[0].program_id, solana_sdk::system_program::id());
+            assert_eq!(ixs[0].accounts[1].pubkey, account);
+            assert_eq!(ixs[1].program_id, program.pubkey());
+            assert_eq!(ixs[1].accounts[0].pubkey, account);
+            assert_eq!(ixs[1].accounts[1].pubkey, mint);
+        }
     }
 
     /// `replenish_pool_async` rebuilds exactly the slot a buy consumed: from

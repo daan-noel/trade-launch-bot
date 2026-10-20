@@ -41,7 +41,7 @@ use live::trader::PumpFunTrader;
 ///                                              [--holder <pubkey>|--largest-holder]
 ///                                              — simulate a real curve sell
 ///                                                against live state (zero SOL)
-///   probe simulate-buy <mint> <sol> [slippage_bps]
+///   probe simulate-buy <mint> <sol> [slippage_bps] [--seeded]
 ///                                              — simulate a real curve buy
 ///                                                against live state (zero SOL)
 ///   probe simulate-amm-buy <mint> <sol> [slippage_bps]
@@ -195,20 +195,28 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
         "simulate-buy" => {
             let mint = args
                 .get(1)
-                .context("usage: probe simulate-buy <mint> <sol> [slippage_bps]")?;
+                .context("usage: probe simulate-buy <mint> <sol> [slippage_bps] [--seeded]")?;
             let positional: Vec<&String> =
                 args.iter().skip(2).filter(|s| !s.starts_with("--")).collect();
             let sol: f64 = positional
                 .first()
-                .context("usage: probe simulate-buy <mint> <sol> [slippage_bps]")?
+                .context("usage: probe simulate-buy <mint> <sol> [slippage_bps] [--seeded]")?
                 .parse()
                 .context("sol must be a float")?;
             let slippage_bps: Option<u64> = match positional.get(1) {
                 Some(s) => Some(s.parse().context("slippage_bps must be a u64")?),
                 None => None,
             };
-            println!("Simulating curve BUY — {sol} SOL, slippage_bps: {slippage_bps:?}");
-            let outcome = trader.simulate_curve_buy(mint, sol, slippage_bps).await?;
+            let seeded = args.iter().any(|a| a == "--seeded");
+            println!(
+                "Simulating curve BUY — {sol} SOL, slippage_bps: {slippage_bps:?}{}",
+                if seeded { ", seeded token account (snipe path)" } else { "" }
+            );
+            let outcome = if seeded {
+                trader.simulate_curve_buy_seeded(mint, sol, slippage_bps).await?
+            } else {
+                trader.simulate_curve_buy(mint, sol, slippage_bps).await?
+            };
             print_sim_outcome(&outcome);
         }
         "simulate-amm-buy" => {
@@ -673,6 +681,7 @@ async fn run_sim_matrix(trader: &PumpFunTrader, args: &[String]) -> anyhow::Resu
 
     // 1) Curve buy
     matrix_row("curve-buy", trader.simulate_curve_buy(&curve_mint, 0.01, Some(500)).await);
+    matrix_row("curve-buy-seeded", trader.simulate_curve_buy_seeded(&curve_mint, 0.01, Some(500)).await);
 
     // 2) Curve sell as largest holder. Prefer the routing cashback flag; if the
     // program still asks for a UVA (6024), retry once with cashback=true.

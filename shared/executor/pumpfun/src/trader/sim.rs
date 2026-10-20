@@ -21,6 +21,7 @@ use super::assemble::CuPath;
 use super::PumpFunTrader;
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol;
+use crate::types::TokenProgram;
 use executor_core::SimOutcome;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
@@ -39,6 +40,30 @@ impl PumpFunTrader {
         token_mint: &str,
         sol_amount: f64,
         slippage_bps: Option<u64>,
+    ) -> Result<SimOutcome> {
+        self.simulate_curve_buy_with(token_mint, sol_amount, slippage_bps, false)
+            .await
+    }
+
+    /// [`Self::simulate_curve_buy`] on the snipe path's account shape: a fresh
+    /// create-with-seed token account instead of the ATA, built by the same
+    /// helper the live snipe buy uses.
+    pub async fn simulate_curve_buy_seeded(
+        &self,
+        token_mint: &str,
+        sol_amount: f64,
+        slippage_bps: Option<u64>,
+    ) -> Result<SimOutcome> {
+        self.simulate_curve_buy_with(token_mint, sol_amount, slippage_bps, true)
+            .await
+    }
+
+    async fn simulate_curve_buy_with(
+        &self,
+        token_mint: &str,
+        sol_amount: f64,
+        slippage_bps: Option<u64>,
+        seeded: bool,
     ) -> Result<SimOutcome> {
         // Validate the size with the same guard the real buy uses.
         let buy_lamports = self.buy_lamports_checked(sol_amount)?;
@@ -59,10 +84,16 @@ impl PumpFunTrader {
             &mint,
             &pdas.token_program,
         );
-        let ata_exists = self.rpc.get_account(&ata).await.is_ok();
-        let account_creation_ixs = if ata_exists {
-            Vec::new()
+        let (ata, account_creation_ixs) = if seeded {
+            let program = TokenProgram::from_pubkey(&pdas.token_program);
+            let template = self.build_template(program)?;
+            let account = template.user_token_account;
+            let ixs = super::pool::seeded_account_ixs(template, program, &mint, &wallet)?;
+            (account, ixs)
+        } else if self.rpc.get_account(&ata).await.is_ok() {
+            (ata, Vec::new())
         } else {
+            (ata,
             vec![
                 spl_associated_token_account::instruction::create_associated_token_account_idempotent(
                     &wallet,
@@ -70,7 +101,7 @@ impl PumpFunTrader {
                     &mint,
                     &pdas.token_program,
                 ),
-            ]
+            ])
         };
 
         // Same slippage floor the live buy would compute from live reserves.
@@ -333,7 +364,11 @@ impl PumpFunTrader {
                 .and_then(|a| a.as_str())
                 .context("getTokenLargestAccounts: missing address")?;
             let ata = Pubkey::from_str(ata_str)?;
-            let owner = self.token_account_owner(&ata).await?;
+            // The list is read at `processed`: a holder that emptied and closed its
+            // account since then is gone at the lookup, so try the next one.
+            let Ok(owner) = self.token_account_owner(&ata).await else {
+                continue;
+            };
             // Vault ATAs are owned by the curve/pool PDA, which itself is owned
             // by pump / pump_amm. Real traders are system (or wallet-program)
             // accounts — never the pump programs.

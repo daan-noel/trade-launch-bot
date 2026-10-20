@@ -297,23 +297,8 @@ impl PumpFunTrader {
             // path consumes a pooled template; the simulate path mints its own ATA.
             let mut account_creation_ixs: Vec<Instruction> = Vec::new();
             if let Some(template) = template_opt {
-                account_creation_ixs.push(template.create_with_seed_ix);
-
-                let init_ix = match token_program {
-                    TokenProgram::Legacy => spl_token::instruction::initialize_account3(
-                        &token_program_pk,
-                        &user_token_account,
-                        mint,
-                        &signer.pubkey(),
-                    )?,
-                    TokenProgram::Token2022 => spl_token_2022::instruction::initialize_account3(
-                        &token_program_pk,
-                        &user_token_account,
-                        mint,
-                        &signer.pubkey(),
-                    )?,
-                };
-                account_creation_ixs.push(init_ix);
+                account_creation_ixs =
+                    super::pool::seeded_account_ixs(template, token_program, mint, &signer.pubkey())?;
             } else if user_token_account_override.is_none() && !skip_ata_check {
                 account_creation_ixs.push(create_associated_token_account_idempotent(
                     &signer.pubkey(),

@@ -896,6 +896,7 @@ impl PumpFunTrader {
             .await?;
         let program_str = protocol::PUMP_SWAP.to_string();
 
+        let mut first_err: Option<String> = None;
         for s in sigs.as_array().into_iter().flatten() {
             // Failed txs don't carry the correct account list — skip up front.
             let errored = s.get("err").map(|e| !e.is_null()).unwrap_or(false);
@@ -916,8 +917,12 @@ impl PumpFunTrader {
             {
                 Ok(tx) => tx,
                 // A single failed lookup shouldn't sink the whole resolution —
-                // the next candidate may still yield the layout.
-                Err(_) => continue,
+                // the next candidate may still yield the layout. The first error
+                // is kept for the log below.
+                Err(e) => {
+                    first_err.get_or_insert_with(|| e.to_string());
+                    continue;
+                }
             };
             if let Some((needs_pool_v2, marker)) = extract_swap_layout(&tx, &program_str, &pool_str)
             {
@@ -927,6 +932,10 @@ impl PumpFunTrader {
                 };
                 return Ok(Some((needs_pool_v2, marker)));
             }
+        }
+        if let Some(e) = first_err {
+            // "No recent swap" would otherwise hide an RPC rejection of every one.
+            warn!("swap layout of {pool_str}: no swap parsed, first getTransaction error: {e}");
         }
         Ok(None)
     }
