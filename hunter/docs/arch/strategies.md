@@ -586,9 +586,21 @@ A **shape** is one criteria map (every axis in it must hold). A fingerprint matc
   whole fingerprint `PendingFirstSlot` (even a wildcard), and `Full` decides.
 - Matching cost is per token at creation only; the per-trade path is untouched, and it
   is still one fingerprint per rule, so no extra `TagState`.
-- Readers that lower ONE axis map (the creation-stats SQL scope, sweep promotion from a
-  scope fingerprint, the frontend group-key match) refuse or skip a multi-shape row
-  (`is_multi_shape`) rather than read its first shape alone.
+- **Readers of the whole row.** The creation-stats SQL scope lowers it as `(include
+  shape OR ...) AND NOT COALESCE(exclude shape, FALSE) ...` (each `ix_labels` sequence
+  bound under its own placeholder; a single-shape row keeps one clause per axis), and its
+  card carries an empty group key. Sweep promotion from a multi-shape scope narrows
+  EVERY include shape with the group's clauses and keeps the exclusions
+  (`GroupSelection::scope_alt` / `scope_exclude`). The frontend group-key match
+  (`fingerprintCompatibleWithGroupKey`) skips a multi-shape row, and
+  `fingerprintMatchesIdentity` compares both lists.
+- **A partial PUT keeps the lists.** A fingerprint update whose body omits
+  `alt_criteria` / `exclude_criteria` keeps the stored value
+  (`Fingerprint::inherit_absent_shapes`); only an explicit `[]` / `null` clears one.
+  Every client that edits one field of a loaded row sends the whole identity through
+  `fingerprintUpdateBody`.
+- The simulate candidate/history cache keys on the fingerprint's match identity, not its
+  id alone.
 - Auto-name: shapes join with ` | `, exclusions follow ` - `
   (`ix_count=4 | ix_count=5 - ix_count=7`, `ALL - ix_count=7`).
 

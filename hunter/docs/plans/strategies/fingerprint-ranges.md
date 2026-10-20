@@ -127,7 +127,7 @@ comparison is canonical without a canonicalisation pass.
 
 ### Row identity is wider than match identity
 
-Two rows are the same **row** when `criteria`, `wildcard` AND `tags` agree. `tags`
+Two rows are the same **row** when `criteria`, `alt_criteria`, `exclude_criteria`, `wildcard` AND `tags` agree (the two shape lists: [include and exclude shapes](../../arch/strategies.md#include-and-exclude-shapes)). `tags`
 selects no token, so it is not *match* identity - but it compiles into that row's live
 trade tags at reload, keyed by `fingerprint_id`. Two rows selecting the same tokens with
 different tags classify flow differently, so they are different fingerprints and both must

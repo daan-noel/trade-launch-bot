@@ -2612,7 +2612,7 @@ fn an_exclusion_on_an_unknown_value_does_not_reject() {
     fp.exclude_criteria = vec![Criteria::new().with(AxisId::CuPrice, AxisPredicate::exact(250_000))];
     reduce(&mut s, reload(vec![rule_capped(1, 1, json!({ "take_profit": 100 }), 10, 0)], vec![fp]));
     // No cu_price observed: kept and armed.
-    assert_eq!(buys(&spawn(&mut s, "unknown", Box::new(TokenFingerprint::default()))), vec![(rid(1), BUY)]);
+    assert_eq!(buys(&spawn(&mut s, "unknown", Box::default())), vec![(rid(1), BUY)]);
     // The excluded value is rejected.
     let hit = Box::new(TokenFingerprint { cu_price: Some(250_000), ..Default::default() });
     assert!(spawn(&mut s, "hit", hit).is_empty());

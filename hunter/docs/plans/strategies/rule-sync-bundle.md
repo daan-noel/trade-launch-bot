@@ -40,7 +40,7 @@ item, the changed fields with both values, and which side's `updated_at` is newe
 
 | Travels — the strategy | Stays with the box |
 | --- | --- |
-| `fingerprints.criteria`, `.wildcard`, `.tags`, `.name` | `strategy_rules.is_active` |
+| `fingerprints.criteria`, `.alt_criteria`, `.exclude_criteria`, `.wildcard`, `.tags`, `.name` | `strategy_rules.is_active` |
 | `strategy_rules.params`, `.buy_amount_lamports` | `strategy_rules.is_enabled` |
 | `.max_concurrent_tokens`, `.max_total_tokens`, `.rule_name`, `.tags` | `strategy_rules.trade_mode` |
 | | `strategy_runs` / `strategy_positions` / `strategy_run_metrics` |
@@ -71,7 +71,7 @@ rule that arrived under a fresh UUID would be a second copy, and every later pas
 in either direction would fork again.
 
 A fingerprint that is new *by id* can still be present *by identity*. The
-`fingerprints_identity_uniq` index keys on `criteria` + `wildcard` + `tags`, so
+`fingerprints_identity_uniq` index keys on `criteria` + `alt_criteria` + `exclude_criteria` + `wildcard` + `tags`, so
 inserting it would be rejected. The plan resolves that to
 `reuse_existing`: nothing is inserted, and the bundle's rules are rebound onto the
 row already there.
@@ -161,7 +161,7 @@ amount of diffing can tell them apart from this side.
 ## Prerequisite
 
 Both boxes run the same core migration chain. A bundle carrying `criteria` needs
-core `0009` on the target, and a v2 bundle needs core `0021` (the `tags` column) and its
+core `0009` on the target, one carrying `alt_criteria` / `exclude_criteria` needs core `0033`, and a v2 bundle needs core `0021` (the `tags` column) and its
 boot data migration; redeploying the live bin applies both (`sqlx::migrate!` and the
 data migration run at boot). An un-migrated server fails the whole Rules UI, not just this: see
 [db-patterns.md](../database/db-patterns.md).
