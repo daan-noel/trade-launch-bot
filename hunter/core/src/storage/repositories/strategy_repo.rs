@@ -3854,16 +3854,17 @@ impl StrategyRepo {
         Ok(acct)
     }
 
-    /// Whether any open real position under ANY wallet, other than `exclude_id`, is on
-    /// this mint. The pool price feed is one subscription per mint shared by every
-    /// wallet, so its release asks this, not the per-wallet question.
-    pub async fn has_other_open_real_position_on_mint_any_wallet(
+    /// Whether any open position, real or paper, under ANY wallet, other than
+    /// `exclude_id`, is on this mint. The pool price feed is one subscription per
+    /// mint shared by every wallet and both modes, so its release asks this, not
+    /// the per-wallet question.
+    pub async fn has_other_open_position_on_mint_any_wallet(
         &self,
         mint: &str,
         exclude_id: Uuid,
     ) -> anyhow::Result<bool> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (                  SELECT 1 FROM strategy_positions                  WHERE mint_address = $1 AND mode = 'real' AND id <> $2                    AND status IN ('BuySubmitted','Holding','ExitPending',                                  'ExitStuck','ExitUnconfirmed')              )",
+            "SELECT EXISTS (                  SELECT 1 FROM strategy_positions                  WHERE mint_address = $1 AND id <> $2                    AND status IN ('BuySubmitted','Holding','ExitPending',                                  'ExitStuck','ExitUnconfirmed')              )",
         )
         .bind(mint)
         .bind(exclude_id)

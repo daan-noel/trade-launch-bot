@@ -193,15 +193,15 @@ struct HeldPoolRelease {
 }
 
 impl HeldPoolRelease {
-    /// Release only once no *other* open real position, under ANY wallet, still needs
-    /// the pool feed (it is one subscription per mint, shared by every wallet).
-    /// A failed check keeps the subscription — an extra sub costs bandwidth, a
-    /// missing one costs a sell.
+    /// Release only once no *other* open position, in ANY mode under ANY wallet,
+    /// still needs the pool feed (it is one subscription per mint, shared by every
+    /// wallet and both modes). A failed check keeps the subscription — an extra
+    /// sub costs bandwidth, a missing one costs a sell.
     async fn run(self) {
         let Some(gate) = self.gate else { return };
         match self
             .repo
-            .has_other_open_real_position_on_mint_any_wallet(&self.mint, self.exclude_id)
+            .has_other_open_position_on_mint_any_wallet(&self.mint, self.exclude_id)
             .await
         {
             Ok(true) => {}
@@ -769,7 +769,7 @@ impl Sink {
                 inflight_intent: None,
             },
         );
-        self.retain_held_pool(&mint, info.mode);
+        self.retain_held_pool(&mint);
         let repo = self.repo.clone();
         let pg_id = pos.id;
         let rule_id = staged.is_none().then_some(delta.rule.0);
@@ -805,7 +805,7 @@ impl Sink {
         self.leave_waiting(delta.rule.0, delta.mint.as_str(), pg_id);
         let Some(meta) = self.registry.get(delta.position) else { return };
         let Some(fill) = delta.fill else { return };
-        self.retain_held_pool(&meta.mint, meta.trade_mode);
+        self.retain_held_pool(&meta.mint);
 
         // Mid-ladder partial fill: entry already recorded. Do NOT overwrite entry_*.
         if meta.entry_token_amount.is_some() {
@@ -1169,11 +1169,9 @@ impl Sink {
     }
 
     /// Keep this mint's PumpSwap pool on the LaserStream filter for the life of
-    /// the real position (independent of `track_post_migration`).
-    fn retain_held_pool(&self, mint: &str, mode: TradeMode) {
-        if mode != TradeMode::Real {
-            return;
-        }
+    /// the position, paper or real (independent of `track_post_migration`): a
+    /// paper exit resolves from the same `trades` rows a real one does.
+    fn retain_held_pool(&self, mint: &str) {
         let Some(gate) = &self.held_pools else {
             return;
         };
@@ -1192,14 +1190,10 @@ impl Sink {
     /// terminal write task runs after its PG write. Built here (needs `&self`)
     /// and executed there so its `has_other_open_position_on_mint` round trip
     /// stays off the decision loop, and so it observes the write that just landed.
-    /// Paper (and a live bin with no gate) yields an inert job.
+    /// A live bin with no gate yields an inert job.
     fn held_pool_release(&self, meta: &PositionMeta) -> HeldPoolRelease {
-        let gate = self
-            .held_pools
-            .clone()
-            .filter(|_| meta.trade_mode == TradeMode::Real);
         HeldPoolRelease {
-            gate,
+            gate: self.held_pools.clone(),
             repo: self.repo.clone(),
             mint: meta.mint.clone(),
             exclude_id: meta.pg_id,

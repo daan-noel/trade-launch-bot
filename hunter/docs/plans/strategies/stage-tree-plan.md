@@ -24,7 +24,6 @@ The 6ix case that motivates it: `hunter/_local/study-6ix-buy/NOTES.md` sections 
     { "name": "burst", "when": [{"metric": "m_flow.buy_sol", "tag": "!volume", "span": "1s", "is": [{"operator": ">=", "value": 0.5}]}] },
     { "name": "pump-light" }
   ],
-  "hold_sec": 0.5,
   "cells": [
     { "phase": "*",  "situation": "burst",   "on": [{"if": [...], "sell": "burst"}] },
     { "phase": "P2", "situation": "leaving", "on": [...] }
@@ -32,54 +31,69 @@ The 6ix case that motivates it: `hunter/_local/study-6ix-buy/NOTES.md` sections 
 }
 ```
 
-- `phases[i].until`: the AND that ends phase `i`; the coin moves to `i + 1` on the first
-  step it holds. The last phase has none. A step moves at most one phase.
+- `phases[i].until`: the AND that ends phase `i`, on metrics that never fall (`>` / `>=` on a
+  monotonic life metric: `m_state.age_sec`, `m_state.peak_liquidity_sol`, a life count). The
+  last phase has none. **The coin's phase is the number of leading phases whose `until`
+  holds now**: it only moves forward, is the same before and after the buy, and needs no
+  stored state, so a restart loses nothing. A buy at age 20 s finds the coin already in P3.
 - `situations`: checked top to bottom, the first `when` that holds wins; the last one has no
   `when` and catches the rest.
-- `hold_sec`: a new situation takes over only after it has held this long, so a reading that
-  sits on a cut does not flip the cell every print.
-- `cells[].phase` / `.situation`: a name or `*`. A step runs the lines of every entry that
-  covers its cell, most specific first (cell, then situation row or phase column, then
-  `*`/`*`); the first line that holds acts, as in a stage today.
+- No situation hold: a situation switches on the print that makes it. A hold of 0.25-2 s
+  scores the same or worse on 6ix (`_local/study-6ix-buy/r44_hold.py`), because it delays
+  both the buy and the sell; it would also be the one piece of stored state.
+- `cells[].phase` / `.situation`: a name or `*`. A cell takes its lines from the ONE most
+  specific entry that covers it (phase and situation named, then one of them, then `*`/`*`);
+  that entry replaces the wider ones, so `P4a x burst` can raise the burst a wider
+  `* x burst` line sells on. A cell that both `P x *` and `* x S` cover needs its own entry
+  (validation refuses the doubt). The first line that holds acts, as in a stage today.
 - `enter.cells`: where a buy may start. The position starts in the cell the coin is in at the
   fill. Omitted = every cell.
 - `always` keeps its meaning: checked before any cell, in every cell.
+- Cell lines read `m_position.*`. A situation's `when` may read `m_position.*` too; before a
+  buy those read `NaN`, so such a situation only matches while holding.
+- A cell has no `go`. A part sell (`sell_pct`) has no stage move to end it, so it stops
+  itself: its `m_position.sold_pct` conditions leave a range no wider than the sell
+  (`sell_pct: 50` with `sold_pct < 50`), and once it fills the line no longer holds. A
+  situation may read `sold_pct` too ("after the half is sold").
+- A cell entry carries all its lines: it replaces the wider entry whole, so a narrower entry
+  that changes one threshold repeats the other lines. Inheritance waits until rules show the
+  need.
 
 `stages` and `phases` do not appear in one rule. A rule without `phases` runs exactly as
 today.
 
 ## One step
 
-1. `always` lines.
-2. Phase: if the current phase's `until` holds, move one phase on.
-3. Situation: the first `when` that holds; it replaces the current one once it has held
-   `hold_sec`.
-4. The cell's lines (most specific first). A `sell` acts as today; `go` does not exist in a
-   cell (phases and situations move by their own conditions).
+All on the same print or tick, in this order:
 
-Each step is one print or tick, as now. A move takes effect from the next step.
+1. Phase: how many leading `until`s hold.
+2. Situation: the first `when` that holds.
+3. `always` lines.
+4. The lines of that cell's most specific entry. A `sell` acts as today; `go` does not
+   exist in a cell (phases and situations move by their own conditions).
+
+So the print that turns the coin into `burst` is the print the burst sell fires on, as in the
+study kernel. Entry runs steps 1-2 on every armed coin's print; outside `enter.cells` the buy
+waits like a failed filter, and the pre-entry veto reads `always` plus the current cell.
+
+A tree rule keeps the one implicit stage, and the held step reads the cell's lines where a
+staged rule reads its stage's: one step function serves both (`CompiledRule::held_step`).
 
 ## Metrics
 
 | Metric | Meaning |
 | --- | --- |
-| `m_position.phase_sec` | seconds since the position entered its current phase |
-| `m_position.situation_sec` | seconds since the current situation took over |
+| `m_state.peak_liquidity_sol` | the highest `liquidity_sol` any print has left so far, SOL, life; never falls |
 
-Both are clock reads on the held side, like `m_position.stage_sec`. Situation and phase
-conditions use the existing families. Two reads the 6ix map needs and the registry lacks, each
-added only on approval:
+| `m_position.sold_pct` | percent of our first buy's tokens that part sells have sold, 0 until one fills |
 
-| Needed read | Meaning |
-| --- | --- |
-| time since a tag's last trade | seconds since the last print carrying the tag (`owner silent 3 s`) |
-| highest pool so far | the highest `liquidity_sol` the coin has reached (one-way life stages) |
+Added only when a rule needs one, on approval: time in phase / time in situation (seconds since
+the coin's current phase / situation began).
 
 ## State and restart
 
-A position stores its phase index, situation index, and the times each began, in
-`strategy_positions.extra`. A restart restores them from that row. The pending situation
-under `hold_sec` is not stored: after a restart it starts over, which only delays a switch.
+Nothing is stored: phase and situation are read from the coin's metrics on every step, so a
+restarted engine finds every coin in the cell it was in.
 
 ## Limits
 
@@ -89,15 +103,21 @@ one cell.
 
 ## Editor
 
-Two lists (phases with their `until`, situations with their `when`, both reorderable) and the
-grid. A grid cell shows its action (buy allowed / sell lines / hold) and opens its lines; a
-row or column header sets lines for every cell in it.
+Phases (left, the stage color) and situations (right, their own color), each a reorderable
+list with its `until` / `when`, then the grid in the same two colors. A grid cell shows BUY
+(click to allow or stop a buy there) and its sell (`+ sell` adds one; a dim sell is the
+column's, row's or every cell's). The selected cell's pane edits its lines for this cell, its
+column (`* x S`), its row (`P x *`) or every cell. Typing a part-sell percent in a cell line
+adds `m_position.sold_pct < that percent`. In words draws the same two lists and the grid.
 
-## Work, in order
+## Status
 
-1. Parse and validate the document (`rule_params.rs`), compile the cell table (`arm.rs`).
-2. The step (`arm.rs`), the two `m_position` clocks, restart state.
-3. Parity: the lab simulate fold and a golden test per move kind (phase move, situation
-   switch under `hold_sec`, cell precedence, entry cell).
-4. The editor grid.
-5. The two missing reads, if approved.
+Built: the document (`rule_params.rs`, tests in `rule_params_tests.rs`), the compiled tree and
+the step (`arm.rs`, tests in `arm_tests.rs`), `m_state.peak_liquidity_sol`,
+`m_position.sold_pct` and part sells in cells, the registry parts `phases` / `situations` /
+`cells` / `enter.cells`, the editor (`TreeEditor.tsx`; the shared fixture
+`engine/fixtures/rule_v2_tree.json` is read by both sides). The 6ix rules run in lab simulate: three
+paper, inactive rules `6ix tree max_pnl / recommended / safest`; engine vs kernel on 10-18 +
+10-19: 135 of 138 shared coins within 0.003 SOL, 5 engine-only coins, totals +2.34 vs +2.36.
+
+Open: the live server needs this engine before a tree rule can run there.

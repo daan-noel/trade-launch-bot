@@ -30,7 +30,7 @@
 //!
 //! ```text
 //! keep a pool when
-//!     the mint has an unsettled REAL position          (authoritative: the DB)
+//!     the mint has an unsettled position, any mode     (authoritative: the DB)
 //!  OR track_post_migration is on AND the pool is live  (the operator asked to record)
 //!  OR it entered the index less than GRACE ago         (a just-added pool gets its window)
 //! ```
@@ -119,25 +119,20 @@ async fn reconcile_once(
     settings_rx: &watch::Receiver<AppSettings>,
     first_seen: &FirstSeen,
 ) -> anyhow::Result<()> {
-    // 1. Two authoritative sets, and they are NOT the same question.
-    //
-    //    `real` — could the wallet be holding a bag? That is what `HeldPoolGate`
-    //    means, what the boot seed uses, and what the consumer's RPC-warm and
-    //    sell-confirm decisions read. Propagated into the gate so every
-    //    `contains` caller downstream answers off these rows rather than off an
-    //    event history that can have drifted.
-    //
-    //    `any` — does anything still need this mint's price feed? A paper exit
-    //    resolves from the same `trades` rows a real one does, so pruning a
-    //    migrated mint's pool blinds a paper run exactly like a real one. This is
-    //    the retention set, and it is a superset of `real`.
-    let real = repo.distinct_unsettled_real_mints().await?;
+    // 1. The authoritative set: does any position, paper or real, still need this
+    //    mint's price feed? A paper exit resolves from the same `trades` rows a
+    //    real one does, so a pool dropped under a paper bag blinds its exits
+    //    exactly like a real one. Propagated into the gate so every `contains`
+    //    caller downstream answers off these rows rather than off an event
+    //    history that can have drifted.
     let unsettled = repo.distinct_unsettled_mints().await?;
-    let newly_held = held.replace(&real);
+    let newly_held = held.replace(&unsettled);
     if !newly_held.is_empty() {
         // A bag whose pool nothing subscribed — a missed migration event, or a
         // position adopted from a restart. Subscribing is the exit-path fix and
-        // it happens before any pruning below.
+        // it happens before any pruning below. `track_pools` derives a pool for
+        // any mint, so a still-on-curve mint gets an entry the migration decode
+        // would have made anyway.
         warn!(
             n = newly_held.len(),
             "pool reconcile: unsettled position(s) whose pool was not tracked — subscribing"
@@ -179,7 +174,6 @@ async fn reconcile_once(
             dropped = drop_mints.len(),
             remaining = index.len(),
             unsettled = unsettled.len(),
-            held_real = real.len(),
             track_post_migration,
             "pool reconcile: untracked pool(s) no position or setting asks for"
         );

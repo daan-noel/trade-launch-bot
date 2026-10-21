@@ -1,8 +1,10 @@
 //! Held-position AMM pool retention.
 //!
 //! `track_post_migration` gates whether *all* migrated pools stay on the LaserStream
-//! subscription. Independently of that toggle, every mint with an unsettled **real**
-//! position must keep its PumpSwap pool subscribed so:
+//! subscription. Independently of that toggle, every mint with an unsettled position,
+//! **paper or real**, must keep its PumpSwap pool subscribed so:
+//! - a paper position keeps seeing the prices its exit rules read (a paper exit
+//!   resolves from the same `trades` rows a real one does),
 //! - `observe_amm_swap_accounts` can zero-RPC warm `AmmPoolInfo` (avoiding the
 //!   `getSignaturesForAddress` + `getTransaction` cold burst), and
 //! - sell-confirm can see the bot's own AMM fill in `trades`.
@@ -37,7 +39,7 @@ impl HeldPoolGate {
         }
     }
 
-    /// Record that `mint` has an unsettled real position. Does not subscribe
+    /// Record that `mint` has an unsettled position. Does not subscribe
     /// until [`Self::track_migrated`] / a migration event keeps the pool.
     pub fn note(&self, mint: &str) {
         self.held.insert(mint.to_string());

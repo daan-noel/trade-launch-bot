@@ -240,7 +240,7 @@ keep a pool when
 
 Both directions are applied. It **subscribes** a bag whose pool nothing tracked (a missed migration event, a position adopted across a restart) — an exit-path fix on its own — and drops pools nothing asks for, which is what stops the metered filter growing for the life of the process. The retention arm is re-read from `strategy_positions` on every pass rather than from the accumulated `HeldPoolGate` events, which is what makes pruning safe: the set it checks against is the same rows the exit path is driven by, so a drifted in-memory set is repaired in the direction of *more* subscription. `HeldPoolGate::replace` is that repair. A pass that cannot read the DB changes nothing.
 
-Retention spans **paper as well as real**. `HeldPoolGate` stays real-only — it answers "could the wallet be holding a bag", the right question for RPC-warm and sell-confirm — but a paper exit resolves from the same `trades` rows a real one does, so a paper position's pool is retained too.
+Retention spans **paper as well as real**, at every layer: `HeldPoolGate` is noted on a paper or real entry fill, `on_token_migrated` keeps a gated mint's pool, the cache seed re-subscribes every migrated mint with an open position at boot, and the release on close waits for the last open position on the mint in either mode (`has_other_open_position_on_mint_any_wallet`). A paper exit resolves from the same `trades` rows a real one does, so a pool dropped under a paper bag freezes its price and no exit rule ever fires.
 
 Losing the block metas hands the blockhash cache back to its watchdog, so `CacheCfg::blockhash_refresh_ms` (15 s) and `blockhash_max_age_ms` (20 s) are what keep that from re-appearing as `getLatestBlockhash` traffic. The watchdog skips a tick only while the cache is fresher than **half** the interval: testing the full interval makes its own last write borderline-fresh, so the cache drifts to two intervals, past the read tolerance, and puts a live fetch back on the AMM buy hot path. `config::tests::refresh_interval_stays_inside_the_read_tolerance` pins the pair.
 
@@ -253,7 +253,7 @@ Losing the block metas hands the blockhash cache back to its watchdog, so `Cache
 | File | Responsibility |
 | --- | --- |
 | `mod.rs` | `spawn_ingest(...)` — builds `Ingest`, starts it, spawns consumer + db_writer tasks, starts watchdog thread; returns `IngestSpawnResult` |
-| `held_pools.rs` | `HeldPoolGate` — keeps PumpSwap pools subscribed for unsettled **real** positions even when `track_post_migration` is off (feed harvest + sell-confirm) |
+| `held_pools.rs` | `HeldPoolGate` — keeps PumpSwap pools subscribed for unsettled positions, paper and real, even when `track_post_migration` is off (paper exit prices, feed harvest, sell-confirm) |
 | `consumer.rs` | `IngestConsumer` — translates `IngestEvent` → `trading_core` types; fans out to token_cache, DB, strategy, SSE, trader; handles `track_mayhem` / `track_post_migration` policy transitions |
 | `early_trades.rs` | `EarlyTrades` - holds a trade that arrives before its mint's `TokenCreated` (bounded queue, `EARLY_TRADE_SLOTS` window) and hands it back for replay after the creation tx's own trade |
 | `db_writer.rs` | `DbWriter` — batches (1000 ops / 150ms), dedups, persists; stamps `DbHeartbeat` after a flush **only if ≥1 row persisted** (`any_ok`); signals `TradeSignals` per `(wallet,mint)`; `DbWriteOp` variants: `Raw(RawBlobJob)` · `Token` · `Wallet` · `Trade` · `Migration`. `tokens_info` stats are the separate 30 s flush |

@@ -24,12 +24,12 @@ use trading_core::storage::repositories::{
 };
 
 /// Outcome of [`seed_token_cache`]: cache is populated, and the caller must
-/// subscribe AMM pools for any unsettled real positions on already-migrated
-/// mints (see [`crate::ingest::HeldPoolGate`]).
+/// subscribe AMM pools for any unsettled positions (paper or real) on
+/// already-migrated mints (see [`crate::ingest::HeldPoolGate`]).
 #[derive(Debug, Default)]
 pub struct SeedOutcome {
-    /// Every unsettled real-mode mint — retained so a later migration event
-    /// does not untrack the pool while the position is still open.
+    /// Every mint with an unsettled position in any mode — retained so a later
+    /// migration event does not untrack the pool while the position is still open.
     pub held_mints: Vec<String>,
     /// Subset of [`Self::held_mints`] already migrated — subscribed immediately.
     pub held_migrated_mints: Vec<String>,
@@ -74,7 +74,7 @@ pub async fn seed_token_cache(
     // can't re-track an existing mint, so an open exit on a token older than the
     // window would otherwise strand. Pull in any that the window missed.
     let held_set: HashSet<String> = StrategyRepo::new(pool.clone())
-        .distinct_unsettled_real_mints()
+        .distinct_unsettled_mints()
         .await?
         .into_iter()
         .collect();
@@ -136,9 +136,10 @@ pub async fn seed_token_cache(
         token_cache.entry(mint).or_insert(state);
     }
 
-    // Unsettled real positions on already-migrated mints need their PumpSwap
-    // pools on the LaserStream filter immediately — otherwise the first AMM exit
-    // after restart falls through to the getTransaction cold path.
+    // Unsettled positions on already-migrated mints need their PumpSwap pools on
+    // the LaserStream filter immediately — otherwise a paper bag stops seeing
+    // prices and the first real AMM exit after restart falls through to the
+    // getTransaction cold path.
     let held_mints: Vec<String> = held_set.iter().cloned().collect();
     let mut held_migrated_mints: Vec<String> = Vec::new();
     for mint in &held_mints {
@@ -469,6 +470,67 @@ mod tests {
 
         let _ = sqlx::query("DELETE FROM trades WHERE mint_address = $1")
             .bind(&mint)
+            .execute(&pool)
+            .await;
+    }
+
+    /// A paper bag is held for pool-retention purposes: the seed's held set and the
+    /// pool release both count an open PAPER position, so a migrated mint's pool
+    /// is neither left unsubscribed at boot nor dropped while the bag is open.
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn an_open_paper_position_holds_its_pool() {
+        let Some(pool) = test_pool().await else { return };
+        let repo = StrategyRepo::new(pool.clone());
+        let mint = uniq("MINT-paper-held-");
+        let run_id = Uuid::new_v4();
+        let run = trading_core::models::StrategyRun {
+            id: run_id,
+            strategy_id: "generic".into(),
+            rule_id: None,
+            mode: "paper".into(),
+            run_seq: 1,
+            status: "Running".into(),
+            params_snapshot: serde_json::json!({}),
+            max_total_tokens: None,
+            config_hash: None,
+            config_edits: serde_json::json!([]),
+            started_at: Utc::now(),
+            finished_at: None,
+        };
+        repo.insert_run(&run).await.expect("insert run");
+        let mut pos = trading_core::models::StrategyPosition::new(
+            run_id,
+            "generic".into(),
+            Uuid::new_v4(),
+            "paper".into(),
+            mint.clone(),
+            "paper".into(),
+        );
+        pos.status = "Holding".into();
+        repo.insert_position(&pos).await.expect("insert position");
+
+        let held = repo.distinct_unsettled_mints().await.expect("held set");
+        assert!(held.contains(&mint), "the seed's held set names a paper bag");
+        assert!(
+            !repo.distinct_unsettled_real_mints().await.expect("real set").contains(&mint),
+            "and the real-only set (wallet reconcile) still does not"
+        );
+        assert!(
+            repo.has_other_open_position_on_mint_any_wallet(&mint, Uuid::new_v4())
+                .await
+                .expect("release check"),
+            "another position's close must not release a pool a paper bag reads"
+        );
+        assert!(
+            !repo.has_other_open_position_on_mint_any_wallet(&mint, pos.id)
+                .await
+                .expect("release check"),
+            "the bag's own close is the last holder"
+        );
+
+        let _ = sqlx::query("DELETE FROM strategy_runs WHERE id = $1")
+            .bind(run_id)
             .execute(&pool)
             .await;
     }
