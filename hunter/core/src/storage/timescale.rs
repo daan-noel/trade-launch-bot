@@ -1,7 +1,9 @@
-//! TimescaleDB continuous-aggregate setup, run once at boot (idempotent).
+//! TimescaleDB setup run once at boot (idempotent): the continuous aggregates
+//! and the per-database `trades` retention horizon.
 //!
 //! Hypertables + compression/retention policies live in the SQL migration
-//! (they are transaction-safe). Continuous aggregates **cannot** be created
+//! (they are transaction-safe); `TRADES_RETENTION_DAYS` overrides the `trades`
+//! horizon per database ([`apply_trades_retention`]). Continuous aggregates **cannot** be created
 //! inside a transaction block, and sqlx 0.6 wraps every migration in one — so the
 //! wall-clock OHLCV candle CAggs are created here instead, via autocommit
 //! statements after `migrate!` has run. Each step checks existence first, so
@@ -14,6 +16,36 @@
 //!   *on* the 1m rollup, not re-scans of `trades`.
 
 use sqlx::PgPool;
+
+/// Point the `trades` retention policy at `days` (`TRADES_RETENTION_DAYS`).
+/// The migration declares 30 days for every database; the live box keeps a
+/// short window and the lab a long one, so the horizon is per database and
+/// set here. A no-op when the policy already matches. `tokens` and
+/// `wallet_dict` follow it: `prune_retained_catalog` reads the policy (0025).
+pub async fn apply_trades_retention(pool: &PgPool, days: u32) -> anyhow::Result<()> {
+    let matches: Option<bool> = sqlx::query_scalar(
+        "SELECT (config ->> 'drop_after')::interval = make_interval(days => $1) \
+         FROM timescaledb_information.jobs \
+         WHERE hypertable_name = 'trades' AND proc_name = 'policy_retention'",
+    )
+    .bind(days as i32)
+    .fetch_optional(pool)
+    .await?;
+    if matches == Some(true) {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT remove_retention_policy('trades', if_exists => TRUE)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SELECT add_retention_policy('trades', drop_after => make_interval(days => $1))")
+        .bind(days as i32)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    tracing::info!(days, "trades retention policy set");
+    Ok(())
+}
 
 /// Create the OHLCV continuous aggregates + their refresh policies if absent.
 /// Best-effort per CAgg but errors propagate (a misconfigured TimescaleDB should

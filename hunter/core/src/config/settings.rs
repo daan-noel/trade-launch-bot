@@ -70,6 +70,11 @@ pub struct Settings {
     pub db_batch_max_connections: u32,
     pub db_batch_min_connections: u32,
     pub db_acquire_timeout: Duration,
+    /// `trades` retention horizon in days, applied to the policy at boot
+    /// ([`crate::storage::timescale::apply_trades_retention`]). `None` keeps the
+    /// migration's 30 days. The live box sets a short window and the lab a long
+    /// one, so the two databases share one migration chain but not one horizon.
+    pub trades_retention_days: Option<u32>,
 
     // --- Server ---
     pub http_enabled: bool,
@@ -109,6 +114,7 @@ impl Settings {
             db_batch_max_connections: env_parse_min("DB_BATCH_MAX_CONNECTIONS", 16u32, 1)?,
             db_batch_min_connections: env_parse("DB_BATCH_MIN_CONNECTIONS", 2u32)?,
             db_acquire_timeout: Duration::from_secs(env_parse("DB_ACQUIRE_TIMEOUT_SECS", 10u64)?),
+            trades_retention_days: env_parse_opt_min("TRADES_RETENTION_DAYS", 1u32)?,
             // Route through the erroring parse: a typo (e.g. `HTTP_ENABLED=ture`)
             // must fail loudly, not silently fall back to `true` and expose the API.
             http_enabled: env_parse("HTTP_ENABLED", true)?,
@@ -212,4 +218,25 @@ where
         anyhow::bail!("{key} must be >= {min}, got {val}");
     }
     Ok(val)
+}
+
+/// An optional knob: unset or empty is `None`, a value below `min` is an error.
+fn env_parse_opt_min<T>(key: &str, min: T) -> anyhow::Result<Option<T>>
+where
+    T: std::str::FromStr + Copy + PartialOrd + std::fmt::Display,
+    T::Err: std::fmt::Display,
+{
+    match std::env::var(key) {
+        Ok(raw) if !raw.trim().is_empty() => {
+            let val = raw
+                .trim()
+                .parse::<T>()
+                .map_err(|e| anyhow::anyhow!("Invalid value for {key}={raw:?}: {e}"))?;
+            if val < min {
+                anyhow::bail!("{key} must be >= {min}, got {val}");
+            }
+            Ok(Some(val))
+        }
+        _ => Ok(None),
+    }
 }

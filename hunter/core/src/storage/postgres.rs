@@ -136,6 +136,11 @@ pub async fn connect(settings: &Settings) -> anyhow::Result<DbPools> {
     crate::storage::timescale::setup_caggs(&hot)
         .await
         .map_err(|e| anyhow::anyhow!("TimescaleDB continuous-aggregate setup failed: {e}"))?;
+    if let Some(days) = settings.trades_retention_days {
+        crate::storage::timescale::apply_trades_retention(&hot, days)
+            .await
+            .map_err(|e| anyhow::anyhow!("trades retention setup failed: {e}"))?;
+    }
 
     // `api` serves interactive reads — bound each statement so one slow query under
     // disk pressure can't drain the pool the dashboard depends on.

@@ -65,7 +65,7 @@
   pull it into a temp table, drop local rows whose address the server reassigned to a
   different id (server wins), then UPSERT every server row by id. Local-only ids the
   server no longer has are PRESERVED, because the lab retains trade history LONGER than
-  the server's retention window (trades: 30 days) and those old trades still need them. Two earlier approaches
+  the server's retention window (trades: TRADES_RETENTION_DAYS, 7 on the box) and those old trades still need them. Two earlier approaches
   were wrong: the original `WHERE id > MAX(local id) ON CONFLICT DO NOTHING` silently
   skipped colliding server rows (after the ~Jul-2026 rebuild re-minted wallet_dict this
   left ~98k ids missing / 58% of trades invisible); and a TRUNCATE+full-replace fixed
@@ -131,13 +131,13 @@
   # Use it when a day is SHORT locally (an ingest outage, an interrupted run) or when a
   # column reads NULL on the lab that the server has: the normal pull is append-only and
   # can fix neither. Costs the whole window re-transferred, so give it one day at a time
-  # and keep it off the server's busy hours. The server keeps `trades` for 30 days, but
-  # only the last ~7 are worth repairing this way: past that the local chunk is compressed
+  # and keep it off the server's busy hours. The server keeps `trades` for 7 days, but
+  # only the last ~3 are worth repairing this way: past that the local chunk is compressed
   # and a rewrite is refused outright -- use -RepairFillOnly there (next example).
   ./scripts/db-incremental-sync.ps1 -RepairFrom '2026-08-29 00:00:00+00' -RepairTo '2026-08-30 00:00:00+00'
 
 .EXAMPLE
-  # Repair a day PAST THE COMPRESSION LINE (7 days). -RepairFillOnly inserts the missing
+  # Repair a day PAST THE COMPRESSION LINE (3 days). -RepairFillOnly inserts the missing
   # rows and never rewrites an existing one, so it does not decompress: without it the
   # upsert fails outright with "tuple decompression limit exceeded by operation". It fills
   # HOLES but cannot heal a column, which is the right trade on an old chunk.
@@ -156,7 +156,7 @@ param(
   [int]   $RemotePgPort    = 0,                                           # 0 = auto-detect from remote .env (default 5555)
   [string]$RepairFrom      = '',                                          # repair mode: re-pull trades from this UTC timestamp with server-wins upserts (ignores the watermark)
   [string]$RepairTo        = '',                                          # repair mode upper bound (default: the same cutoff the normal pull uses)
-  [switch]$RepairFillOnly,                                                # repair by inserting MISSING rows only, never rewriting an existing one -- required past the 7-day compression line, where a rewrite hits TimescaleDB's decompression limit
+  [switch]$RepairFillOnly,                                                # repair by inserting MISSING rows only, never rewriting an existing one -- required past the 3-day compression line, where a rewrite hits TimescaleDB's decompression limit
   [switch]$IncludeRawTxs,                                                 # also sync raw_txs (BYTEA payloads, large; off by default)
   [switch]$IncludeToday,                                                  # also pull today's still-open chunk (partial day; default = sealed days only)
   [switch]$ExportLake,                                                    # after sync: run `cargo run -p hunter-lab -- lake-export` (passes --include-today when -IncludeToday)
@@ -545,7 +545,7 @@ function Sync-TradesChunks([string]$fromWm, [string]$toCutoff, [string]$windowLa
   # TimescaleDB refuses outright: "tuple decompression limit exceeded by operation".
   # `DO NOTHING` fills MISSING ROWS only; it never touches a row that is already there,
   # so it neither decompresses nor errors, and it is far cheaper even on an uncompressed
-  # chunk. Compression lands at 7 days here, so anything older than that wants -RepairFillOnly.
+  # chunk. Compression lands at 3 days here, so anything older than that wants -RepairFillOnly.
   $conflict = if ($Repair -and -not $FillOnly) {
     "DO UPDATE SET $(Get-UpsertSet 'trades' @('block_time','tx_signature','leg_index'))"
   } else { 'DO NOTHING' }
@@ -852,7 +852,7 @@ END `$`$;
   # dict is meant to track the server's.)
   #
   # A naive TRUNCATE + full-replace is ALSO wrong: the server rolls its own window
-  # (trades drop after 30 days) and RE-MINTED/AGED-OUT old wallet ids, but the LAB
+  # (trades drop after TRADES_RETENTION_DAYS) and RE-MINTED/AGED-OUT old wallet ids, but the LAB
   # retains trade history LONGER than that. Replacing wholesale discards the old (id,address) rows the
   # mirror accumulated for those older days -- which the server can no longer supply --
   # re-orphaning historical trades on every run (observed: it fixed Jul+ but re-broke

@@ -56,6 +56,24 @@ docker volume rm meme-trading_pgdata
 
 ## Reclaim — Postgres
 
+`trades` keeps `TRADES_RETENTION_DAYS` (7 here) and compresses after 3 days (`0034`).
+A compressed chunk's own heap and indexes are empty, but under live load the compressor
+cannot take the lock to truncate them, so each compressed day keeps ~2 GB of dead pages.
+`/usr/local/bin/hunter-disk-housekeeping`
+([source](hunter-live/disk-housekeeping.sh)) returns them nightly from root's crontab and
+warns in syslog at 85 %. Run it by hand when `df` is high:
+
+```bash
+sudo /usr/local/bin/hunter-disk-housekeeping; journalctl -t hunter-disk --since today
+```
+
+Install or update it from the checkout:
+
+```bash
+sudo install -m 755 ~/trade-launch-bot/deploy/hunter-live/disk-housekeeping.sh /usr/local/bin/hunter-disk-housekeeping
+sudo crontab -l | grep -q hunter-disk-housekeeping   || (sudo crontab -l 2>/dev/null; echo '30 3 * * * /usr/local/bin/hunter-disk-housekeeping') | sudo crontab -
+```
+
 `drop_chunks` is a `DROP TABLE` per chunk: space returns to the OS at once, no `VACUUM`.
 
 ```bash
@@ -63,14 +81,14 @@ docker exec hunter-postgres psql -U postgres -d hunter_bot -c \
   "SELECT drop_chunks('raw_txs', older_than => INTERVAL '3 days');"
 ```
 
-To change a retention policy, edit `hunter/core/migrations/0001_init.sql` and apply via
-[scripts/squash-catchup.sql](../scripts/squash-catchup.sql) — don't hand-edit policies on
-the box or they drift from the migration.
+The `trades` horizon is `TRADES_RETENTION_DAYS` in the box's `hunter/.env`, applied at
+boot. Any other policy change is a new migration — don't hand-edit policies on the box or
+they drift from the migrations.
 
 ## Reclaim — event log
 
-Bounded by `EVENT_LOG_MAX_BYTES` in the box's `hunter/.env` (**set 536870912 = 512 MiB
-here**), enforced at every segment rotation. If the directory is over that, the setting
+Bounded by `EVENT_LOG_MAX_BYTES` in the box's `hunter/.env` (**536870912 = 512 MiB
+here**; the 6 GiB default is ~2 days of log), enforced at every segment rotation. If the directory is over that, the setting
 isn't live — `docker restart` does **not** re-read `env_file`:
 
 ```bash

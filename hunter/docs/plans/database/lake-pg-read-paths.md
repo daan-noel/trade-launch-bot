@@ -44,7 +44,7 @@ The per-token **`swing1-detect`** endpoint reads the token's **full history = se
 slot the lake never reached) via the shared `swing_1::funnel::build_swing1_funnel`.
 Lake-only blanked the overlay for a token created after the last `lake-export` (entry/exit
 markers still showed — they come from the PG fills, not the lake); the PG-tail union closes
-that, and the lake still covers tokens older than PG's 30-day `trades` retention.
+that, and the lake still covers tokens older than PG's `trades` retention.
 
 The swing1 backtest still **carries its legs** in the result row — so the *sim/sweep*
 inspect chart's legs are the sim's own (no re-detect); only the *position* overlay

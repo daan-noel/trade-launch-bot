@@ -63,7 +63,7 @@ any rule restarts the storm until C1 ships or Phase 0 is set.**
 
 What the plan deliberately does NOT do on this box:
 - No `VACUUM FULL`, manual decompression or recompression of `strategy_arms`. Its bloat ages
-  out through the 30-day retention; autovacuum already clears the dead tuples once aborts stop.
+  out through the `trades` retention; autovacuum already clears the dead tuples once aborts stop.
 - No change to `shared_buffers`, pool sizes or cache caps.
 - No Rust build next to live trading (see Phase 2).
 
@@ -92,7 +92,7 @@ the EBS volume type plus `BurstBalance`. That is the headroom Phase 3 is judged 
   chunks. sqlx 0.6's `.persistent(false)` would also force a fresh plan but leaks a named
   server-side statement per call, so it is not used.
 - Ends armed past the compression horizon are dropped with one aggregated `warn`.
-  `ARM_COMPRESS_AFTER_DAYS` is pinned to `0002_arm_ledger.sql` by a no-DB test.
+  `ARM_COMPRESS_AFTER_DAYS` is pinned to `0034_compress_after_3_days.sql` by a no-DB test.
 - The `#[ignore]` DB test compresses a throwaway chunk, caps decompression at one row, and
   runs a multi-row end seven times. It fails on the old statement and without `SET LOCAL`.
 

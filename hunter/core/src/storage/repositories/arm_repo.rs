@@ -181,10 +181,10 @@ pub type ArmEndRow = (
 );
 
 /// `compress_after` of the `strategy_arms` compression policy, in days
-/// (`0002_arm_ledger.sql`). An episode armed earlier may sit in a compressed chunk,
+/// (`0034_compress_after_3_days.sql`). An episode armed earlier may sit in a compressed chunk,
 /// and an UPDATE reaching one decompresses it. Pinned to the migration by
 /// `compress_horizon_matches_the_migration`.
-pub const ARM_COMPRESS_AFTER_DAYS: i64 = 7;
+pub const ARM_COMPRESS_AFTER_DAYS: i64 = 3;
 
 /// Remove the ends armed past the compression horizon, returning how many went.
 /// A row armed at or after `now - ARM_COMPRESS_AFTER_DAYS` lives in a chunk whose
@@ -417,7 +417,7 @@ mod tests {
     /// take, longer lets a write reach a compressed chunk.
     #[test]
     fn compress_horizon_matches_the_migration() {
-        let migration = include_str!("../../../migrations/0002_arm_ledger.sql");
+        let migration = include_str!("../../../migrations/0034_compress_after_3_days.sql");
         let policy = format!(
             "add_compression_policy('strategy_arms', compress_after => INTERVAL '{ARM_COMPRESS_AFTER_DAYS} days'"
         );

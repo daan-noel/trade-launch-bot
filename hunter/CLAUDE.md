@@ -259,11 +259,12 @@ The rule is here; the linked doc carries the mechanism. Read the doc before edit
 
 Ship `live` + ingest only — `lab` (sweep/arrow/parquet/rayon + bundled `duckdb` + the lake
 pipeline) stays on the workstation. Sweeps and backtests are local-only; the server keeps a
-**30-day** rolling `trades` buffer (compressed after 7 — the two are different numbers,
-`0001_init.sql` declares both). `tokens` and `wallet_dict` follow that same horizon
+**7-day** rolling `trades` buffer (`TRADES_RETENTION_DAYS=7`; the lab keeps a longer one), and
+both compress after 3 days (`0034`). `tokens` and `wallet_dict` follow that same horizon
 (`0025`): a token older than it is deleted once no remaining trade names it, and a
 wallet id no remaining trade uses is deleted. Analysis pulls the window down with
-`scripts/db-incremental-sync.ps1`, which does not copy a token older than the horizon.
+`scripts/db-incremental-sync.ps1`, which does not copy a token older than the horizon -
+run it at least weekly, or the days the server drops are gone.
 Never raise `MAX_TRADES_RETAINED`,
 `SEED_TRACKING_LIMIT`, or cache TTLs there.
 
