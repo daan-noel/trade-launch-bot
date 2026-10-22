@@ -55,6 +55,7 @@ import {
   tokenCreatedAtSec,
   tradeBarSlot,
   tradeBarTime,
+  tradeTimestampSec,
 } from './chartBars';
 import { ChartRangeSlider } from './ChartRangeSlider';
 import { ChartToolbar } from './ChartToolbar';
@@ -78,7 +79,8 @@ import {
   responsiveChartHeight,
   TOKEN_TOTAL_SUPPLY,
 } from './constants';
-import { PRICE_SCALE_MARGINS, createChartOptions, SERIES_BY_STYLE } from './chartOptions';
+import { PRICE_SCALE_MARGINS, createChartOptions, priceScaleMode, SERIES_BY_STYLE } from './chartOptions';
+import { framedEndSec, lastBarIndexAtOrBefore, pickAutoInterval } from './autoInterval';
 import { getString, setString } from 'lib/storage';
 import { BarCrosshairTooltip } from './BarCrosshairTooltip';
 import { LensLaneTooltip } from './LensLaneTooltip';
@@ -129,6 +131,25 @@ import type {
 } from './types';
 
 type ChartPrefs = typeof DEFAULT_CHART_PREFS;
+
+/** Opening-view gutter on each side, as a share of the bar count. */
+const OPENING_VIEW_PAD_SHARE = 0.03;
+
+/** Print times in seconds, oldest first (unparseable ones dropped). */
+function sortedTradeSecs(trades: readonly ChartTrade[]): number[] {
+  const secs: number[] = [];
+  for (const t of trades) {
+    const sec = tradeTimestampSec(t.block_time);
+    if (sec != null) secs.push(sec);
+  }
+  return secs.sort((a, b) => a - b);
+}
+
+/** Seconds the opening view frames: first print to the {@link framedEndSec} rank. */
+function framedSpanSec(trades: readonly ChartTrade[]): number {
+  const secs = sortedTradeSecs(trades);
+  return secs.length > 1 ? framedEndSec(secs) - secs[0] : 0;
+}
 
 const EMPTY_LENS_ITEMS: readonly ChartLensItem[] = [];
 
@@ -659,7 +680,8 @@ export function TokenPriceChart({
 
   const initialPrefs = loadPrefs();
   const [groupMode, setGroupMode] = useState<ChartGroupMode>(initialPrefs.groupMode);
-  const [interval, setInterval] = useState<ChartInterval>(initialPrefs.interval);
+  const [intervalPin, setIntervalPin] = useState<ChartInterval | null>(initialPrefs.intervalPin);
+  const [logScale, setLogScale] = useState(initialPrefs.logScale);
   const [style, setStyle] = useState<ChartStyle>(initialPrefs.style);
   const [showTradeMarkers, setShowTradeMarkers] = useState(initialPrefs.showTradeMarkers);
   const [showAthLine, setShowAthLine] = useState(initialPrefs.showAthLine);
@@ -739,6 +761,17 @@ export function TokenPriceChart({
     [toValueProp],
   );
 
+  // Auto interval: picked once per token, from its life so far and the measured
+  // width, then held - a live print must not re-bucket the chart under the reader.
+  const autoIntervalRef = useRef<{ id: string; interval: ChartInterval } | null>(null);
+  if (trades.length > 0 && chartWidth > 0 && autoIntervalRef.current?.id !== id) {
+    autoIntervalRef.current = {
+      id,
+      interval: pickAutoInterval(framedSpanSec(trades), chartWidth),
+    };
+  }
+  const autoInterval = autoIntervalRef.current?.id === id ? autoIntervalRef.current.interval : '1s';
+  const interval = intervalPin ?? autoInterval;
   const intervalSec = CHART_INTERVALS[interval];
   const groupingKey = groupMode === 'slot' ? 'slot' : intervalSec;
   const selectedBarTime = selectedBar?.barTime ?? null;
@@ -931,6 +964,8 @@ export function TokenPriceChart({
   } | null>(null);
   const groupModeRef = useRef(groupMode);
   groupModeRef.current = groupMode;
+  const logScaleRef = useRef(logScale);
+  logScaleRef.current = logScale;
 
   const athLineAvailable = athChartValue(athPriceInSol, metric, toValue) != null;
 
@@ -940,10 +975,15 @@ export function TokenPriceChart({
     onBarClickRef.current?.(null);
   }, []);
 
-  const handleIntervalChange = useCallback((next: ChartInterval) => {
-    setInterval(next);
-    savePrefs({ interval: next });
+  const handleIntervalChange = useCallback((next: ChartInterval | null) => {
+    setIntervalPin(next);
+    savePrefs({ intervalPin: next });
     onBarClickRef.current?.(null);
+  }, []);
+
+  const handleLogScaleChange = useCallback((next: boolean) => {
+    setLogScale(next);
+    savePrefs({ logScale: next });
   }, []);
 
   const handleStyleChange = useCallback((next: ChartStyle) => {
@@ -1073,8 +1113,8 @@ export function TokenPriceChart({
   // until the axis is double-clicked.
   useEffect(() => {
     if (!showChart) return;
-    chartRef.current?.priceScale('right').applyOptions({ autoScale: true });
-  }, [id, groupingKey, priceUnit, metric, style, showChart]);
+    chartRef.current?.priceScale('right').applyOptions({ autoScale: true, mode: priceScaleMode(logScale) });
+  }, [id, groupingKey, priceUnit, metric, style, showChart, logScale]);
 
   // The host range's default, (re)set when the span, the token or the grouping
   // changes — after the reset above, which runs first in the same flush. Not on
@@ -1098,7 +1138,18 @@ export function TokenPriceChart({
         : null;
     const view = focus ? focusLogicalRange(bars, focus.lo, focus.hi, DEFAULT_RANGE_VIEW_SHARE) : null;
     if (view) ts.setVisibleLogicalRange(view);
-    else ts.fitContent();
+    else if (bars.length > 1) {
+      // The token's life, centered: an even gutter each side so the first and last
+      // framed print are not flush against the axes (`fitContent` leaves none).
+      // Time mode ends at the 99%-of-prints bar; slot mode's bars are slot indices, so it keeps the whole tape.
+      const endIdx =
+        groupMode === 'time'
+          ? lastBarIndexAtOrBefore(bars, framedEndSec(sortedTradeSecs(sortedTradesRef.current)))
+          : -1;
+      const last = endIdx > 0 ? endIdx : bars.length - 1;
+      const pad = Math.max(1, last * OPENING_VIEW_PAD_SHARE);
+      ts.setVisibleLogicalRange({ from: -pad, to: last + pad });
+    } else ts.fitContent();
     openingViewAppliedRef.current = true;
     visibleViewportRef.current = null;
   };
@@ -1120,6 +1171,7 @@ export function TokenPriceChart({
       el,
       createChartOptions(width, initialHeight, groupMode, priceUnit, chartTimezone),
     );
+    chart.priceScale('right').applyOptions({ mode: priceScaleMode(logScaleRef.current) });
     chartRef.current = chart;
     openingViewAppliedRef.current = false;
 
@@ -1392,6 +1444,9 @@ export function TokenPriceChart({
       lensLanePrimRef.current = null;
       rangeSelectPrimRef.current = null;
       hostRangePrimRef.current = null;
+      athLineRef.current = null;
+      migrationLineRef.current = null;
+      eventLineRefs.current = [];
       seriesRef.current = null;
       taggedSeriesRef.current = null;
       untaggedSeriesRef.current = null;
@@ -2078,7 +2133,8 @@ export function TokenPriceChart({
       axisLabelVisible: true,
       title: 'ATH',
     });
-  }, [showAthLine, athLineAvailable, athPriceInSol, metric, toValue, showChart, style]);
+    // The chart (and its series) is rebuilt on these, taking its price lines along.
+  }, [showAthLine, athLineAvailable, athPriceInSol, metric, toValue, showChart, style, groupingKey, groupMode, priceUnit, chartTimezone, fixedHeight]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -2101,7 +2157,7 @@ export function TokenPriceChart({
       axisLabelVisible: true,
       title: 'Migration',
     });
-  }, [showMigrationLine, metric, toValue, showChart, style]);
+  }, [showMigrationLine, metric, toValue, showChart, style, groupingKey, groupMode, priceUnit, chartTimezone, fixedHeight]);
 
   // Dashed horizontal lines at the strategy's entry/exit fill prices. `bars` is a
   // dep so the lines are re-created on the fresh series after a grouping/interval
@@ -2194,6 +2250,8 @@ export function TokenPriceChart({
         symbol={symbol}
         groupMode={groupMode}
         interval={interval}
+        intervalAuto={intervalPin == null}
+        logScale={logScale}
         style={style}
         priceLabel={priceLabel}
         priceUnit={priceUnit}
@@ -2225,6 +2283,7 @@ export function TokenPriceChart({
         isCashbackEnabled={isCashbackEnabled}
         onGroupModeChange={handleGroupModeChange}
         onIntervalChange={handleIntervalChange}
+        onLogScaleChange={handleLogScaleChange}
         onStyleChange={handleStyleChange}
         onMetricChange={onMetricChange}
         onShowTradeMarkersChange={handleShowTradeMarkersChange}

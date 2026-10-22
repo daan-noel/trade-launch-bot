@@ -475,7 +475,12 @@ export type ChartLensMatches = ReadonlyMap<string, LensMatch>;
 export interface ChartToolbarProps {
   symbol: string;
   groupMode: ChartGroupMode;
+  /** The interval in effect (the pinned one, or the auto pick). */
   interval: ChartInterval;
+  /** True while no interval is pinned - the Auto pill is lit. */
+  intervalAuto: boolean;
+  /** Log price axis on the right scale. */
+  logScale: boolean;
   style: ChartStyle;
   priceLabel: string;
   priceUnit?: PriceUnit;
@@ -520,7 +525,9 @@ export interface ChartToolbarProps {
   isMayhemMode?: boolean;
   isCashbackEnabled?: boolean;
   onGroupModeChange: (mode: ChartGroupMode) => void;
-  onIntervalChange: (interval: ChartInterval) => void;
+  /** `null` unpins: back to the auto interval. */
+  onIntervalChange: (interval: ChartInterval | null) => void;
+  onLogScaleChange: (log: boolean) => void;
   onStyleChange: (style: ChartStyle) => void;
   onMetricChange?: (metric: ChartMetric) => void;
   onShowTradeMarkersChange: (show: boolean) => void;

@@ -3,6 +3,7 @@ import {
   ColorType,
   CrosshairMode,
   LineSeries,
+  PriceScaleMode,
   type ChartOptions,
   type DeepPartial,
 } from 'lightweight-charts';
@@ -27,6 +28,11 @@ import type { ChartGroupMode } from './types';
  */
 
 export const PRICE_SCALE_MARGINS = { top: 0.1, bottom: 0.1 };
+
+/** The right price scale's mode: log keeps a 100x pump from flattening the trades before it. */
+export function priceScaleMode(logScale: boolean): PriceScaleMode {
+  return logScale ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal;
+}
 
 /**
  * One price axis (right). Every series on the token chart - the candles and the

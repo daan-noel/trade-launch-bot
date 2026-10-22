@@ -380,10 +380,18 @@ export function IconToggleButton({
   );
 }
 
+/** The price-axis switch: what each mode's equal vertical step means. */
+const PRICE_SCALE_OPTIONS = [
+  { log: false, label: 'Linear', tooltip: 'Equal height = equal price change' },
+  { log: true, label: 'Log', tooltip: 'Equal height = equal % change. Keeps early trades visible after a big pump' },
+] as const;
+
 export function ChartToolbar({
   symbol,
   groupMode,
   interval,
+  intervalAuto,
+  logScale,
   style,
   priceLabel,
   priceUnit = 'SOL',
@@ -415,6 +423,7 @@ export function ChartToolbar({
   isCashbackEnabled,
   onGroupModeChange,
   onIntervalChange,
+  onLogScaleChange,
   onStyleChange,
   onMetricChange,
   onShowTradeMarkersChange,
@@ -602,26 +611,47 @@ export function ChartToolbar({
             )}
             style={{ backgroundColor: CHART_COLORS.grid }}
           >
-            {CHART_INTERVAL_LABELS.map((key) => (
-              <button
-                key={key}
-                type="button"
-                disabled={intervalsDisabled}
-                onClick={() => onIntervalChange(key)}
-                className={cn(
-                  'rounded px-2 py-0.5 text-[11px] font-semibold transition-colors',
-                  interval === key ? 'text-[#0a0a0a]' : 'hover:text-white',
-                  intervalsDisabled && 'cursor-not-allowed hover:text-inherit',
-                )}
-                style={
-                  interval === key
-                    ? { backgroundColor: CHART_COLORS.activePill }
-                    : { color: CHART_COLORS.panelTextDim }
-                }
-              >
-                {key}
-              </button>
-            ))}
+            <button
+              type="button"
+              disabled={intervalsDisabled}
+              onClick={() => onIntervalChange(null)}
+              title="Pick the interval that fits the token's trading life to the chart width"
+              className={cn(
+                'rounded px-2 py-0.5 text-[11px] font-semibold transition-colors',
+                intervalAuto ? 'text-[#0a0a0a]' : 'hover:text-white',
+                intervalsDisabled && 'cursor-not-allowed hover:text-inherit',
+              )}
+              style={
+                intervalAuto
+                  ? { backgroundColor: CHART_COLORS.activePill }
+                  : { color: CHART_COLORS.panelTextDim }
+              }
+            >
+              Auto
+            </button>
+            {CHART_INTERVAL_LABELS.map((key) => {
+              const active = !intervalAuto && interval === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  disabled={intervalsDisabled}
+                  onClick={() => onIntervalChange(key)}
+                  className={cn(
+                    'rounded px-2 py-0.5 text-[11px] font-semibold transition-colors',
+                    active ? 'text-[#0a0a0a]' : 'hover:text-white',
+                    intervalsDisabled && 'cursor-not-allowed hover:text-inherit',
+                  )}
+                  style={
+                    active
+                      ? { backgroundColor: CHART_COLORS.activePill }
+                      : { color: CHART_COLORS.panelTextDim }
+                  }
+                >
+                  {key}
+                </button>
+              );
+            })}
           </div>
 
           <div
@@ -722,6 +752,32 @@ export function ChartToolbar({
               <EntryExitLinesIcon />
             </IconToggleButton>
           )}
+
+          <div
+            className="flex rounded-md p-0.5"
+            style={{ backgroundColor: CHART_COLORS.grid }}
+          >
+            {PRICE_SCALE_OPTIONS.map(({ log, label, tooltip }) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => onLogScaleChange(log)}
+                aria-pressed={logScale === log}
+                title={tooltip}
+                className={cn(
+                  'rounded px-2 py-0.5 text-[11px] font-semibold transition-colors',
+                  logScale === log ? 'text-[#0a0a0a]' : 'hover:text-white',
+                )}
+                style={
+                  logScale === log
+                    ? { backgroundColor: CHART_COLORS.activePill }
+                    : { color: CHART_COLORS.panelTextDim }
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
 
           <IconToggleButton
             active={trimEmptyBars}

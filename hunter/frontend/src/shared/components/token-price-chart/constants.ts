@@ -256,8 +256,9 @@ export const CHART_GROUP_MODE_LABELS: Record<ChartGroupMode, string> = {
  * The chart's opening state, shared by both apps.
  *
  * Tuned for the read this chart is actually used for: what a token did in its
- * first seconds. Hence the **1s** interval (a 1m candle swallows the whole
- * window that decides an entry) and dev markers **on, boundaries-only** — the
+ * whole life at a glance. Hence the **auto** interval (1s while the life fits the
+ * width, so the window that decides an entry is never swallowed by a coarse
+ * candle), a **log** price axis, and dev markers **on, boundaries-only** — the
  * dev's `first_buy`/`sell_all` are the signal, their manufactured mid-position
  * churn is not. Reference lines (ATH, migration, strategy entry/exit) and the
  * vol/non-vol flow overlay stay on; both are read every time and cost nothing
@@ -270,7 +271,11 @@ export const CHART_GROUP_MODE_LABELS: Record<ChartGroupMode, string> = {
  */
 export const DEFAULT_CHART_PREFS = {
   groupMode: 'time' as ChartGroupMode,
-  interval: '1s' as ChartInterval,
+  // `null` = auto: the finest interval that frames the token's whole life at
+  // readable candles (`pickAutoInterval`). A toolbar pick pins one.
+  intervalPin: null as ChartInterval | null,
+  // Pump tokens move 10-100x; a linear price axis flattens everything before the peak.
+  logScale: true,
   style: 'candles' as ChartStyle,
   showTradeMarkers: false,
   showAthLine: true,
