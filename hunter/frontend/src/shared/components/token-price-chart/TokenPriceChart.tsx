@@ -25,6 +25,7 @@ import {
   type FlowLinePoint,
   type FlowLines,
 } from 'lib/flow/flowChartData';
+import { useOwnWallets, withOwnWallets } from 'hooks/useOwnWallets';
 import { classifyOptsForTag } from 'lib/flow/tapeClassify';
 import { tagSentence } from 'lib/strategy/tagsDoc';
 import { useActiveFlowLens } from 'context/FlowLensContext';
@@ -678,7 +679,9 @@ export function TokenPriceChart({
   // trader). The tag itself - fingerprint tag, lens set or staging draft - is the
   // host's to pick and arrives as `flowTag`.
   const lens = useActiveFlowLens();
-  const flowExcludeWallets = lens?.excludeWallets ?? null;
+  const ownWallets = useOwnWallets();
+  const lensExclude = lens?.excludeWallets ?? null;
+  const flowExcludeWallets = useMemo(() => withOwnWallets(lensExclude, ownWallets), [lensExclude, ownWallets]);
   const classifyOpts = useMemo(
     () => classifyOptsForTag(flowTag, creatorWallet, flowExcludeWallets),
     [flowTag, creatorWallet, flowExcludeWallets],

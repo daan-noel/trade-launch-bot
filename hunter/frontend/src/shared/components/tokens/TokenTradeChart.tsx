@@ -22,6 +22,7 @@ import { useIxPatternTarget, type TagTape } from 'hooks/useIxPatternTarget';
 import { tradeFlowReasons } from 'lib/flow/flowChartData';
 import { classifyOptsForTag, type FrozenFlowTag } from 'lib/flow/tapeClassify';
 import { usePriceUnit } from 'context/PriceUnitContext';
+import { useOwnWallets, withOwnWallets } from 'hooks/useOwnWallets';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { useWatchTokenTradesLive } from 'hooks/useTokenTradesLive';
 import { apiErrorMessage, useGetTokenTradesQuery } from 'store/apiSlice';
@@ -273,10 +274,7 @@ export function TokenTradeChart({
     externalSelection?.onClear();
   }, [clearOwnSelection, externalSelection]);
 
-  const myWalletAddresses = useMemo(
-    () => new Set(profileWallets.filter((w) => w.isMine).map((w) => w.address)),
-    [profileWallets],
-  );
+  const myWalletAddresses = useOwnWallets();
 
   // The tag the lines and the badges classify with: the staging draft, else the
   // page's lens, else the host fingerprint's picked tag. Classified over the FULL
@@ -289,7 +287,8 @@ export function TokenTradeChart({
     enabled: !lens && !tape,
   });
   const flowTag = tape ? tape.tag : lens ? lens.tag : persistTarget.tag;
-  const excludeWallets = lens?.excludeWallets ?? null;
+  const lensExclude = lens?.excludeWallets ?? null;
+  const excludeWallets = useMemo(() => withOwnWallets(lensExclude, myWalletAddresses), [lensExclude, myWalletAddresses]);
   const flowReasons = useMemo(
     () => tradeFlowReasons(trades, classifyOptsForTag(flowTag, detail?.creator_wallet, excludeWallets)),
     [trades, flowTag, detail?.creator_wallet, excludeWallets],

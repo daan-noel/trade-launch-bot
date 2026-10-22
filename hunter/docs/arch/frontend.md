@@ -535,6 +535,10 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   chart shows tracked-wallet markers by construction (pass an explicit list to override,
   `[]` to force none). `useProfileWallets` imports the palette/type from the chart's leaf
   files (not the barrel) to avoid an import cycle now that `TokenPriceChart` consumes it.
+  **Ours is one set:** `useOwnWallets()` = `GET /api/own-wallets` (every `trader_wallets`
+  pubkey, archived too, served by both bins) plus the `mine` profile's wallets. It drives the
+  `mine` badge and is merged into the flow classifier's `excludeWallets` (`withOwnWallets`), so
+  a trade of ours never carries a tag, matching the engine's `own_wallets`.
 
 ## Rule authoring — registry-driven (`lib/strategy/`, strategy redesign)
 

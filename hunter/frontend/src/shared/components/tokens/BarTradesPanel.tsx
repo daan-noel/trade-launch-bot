@@ -1,6 +1,7 @@
 import { useMemo, type CSSProperties } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
+import { useOwnWallets } from 'hooks/useOwnWallets';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { tagsFromJson } from 'lib/strategy/tagsDoc';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
@@ -155,10 +156,7 @@ export function BarTradesPanel({
     () => new Set(profileWallets.filter((w) => !w.isMine).map((w) => w.address)),
     [profileWallets],
   );
-  const mineWallets = useMemo(
-    () => new Set(profileWallets.filter((w) => w.isMine).map((w) => w.address)),
-    [profileWallets],
-  );
+  const mineWallets = useOwnWallets();
   const { data: fingerprints } = useGetFingerprintsQuery(undefined, {
     skip: !flowFingerprintId,
   });

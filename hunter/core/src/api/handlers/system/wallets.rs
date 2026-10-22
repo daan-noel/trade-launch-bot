@@ -284,6 +284,20 @@ pub async fn delete_wallet(
 // Tag handlers
 // ---------------------------------------------------------------------------
 
+/// `GET /api/own-wallets` — the pubkey of every trader wallet of ours (archived too),
+/// as a JSON array. Both bins serve it from their own `trader_wallets`, the same
+/// table the engine's own-wallet set reads, so the UI and the tags agree.
+pub async fn list_own_wallets(state: web::Data<Arc<CoreState>>) -> impl Responder {
+    let repo = crate::storage::repositories::trader_wallet_repo::TraderWalletRepo::new(state.db.clone());
+    match repo.all_pubkeys().await {
+        Ok(keys) => HttpResponse::Ok().json(keys),
+        Err(e) => {
+            tracing::error!("list_own_wallets: {e}");
+            HttpResponse::InternalServerError().json(json!({ "error": "database error" }))
+        }
+    }
+}
+
 /// `GET /api/tags` — list all tags.
 pub async fn list_tags(state: web::Data<Arc<CoreState>>) -> impl Responder {
     let repo = state.wallet_tag_repo();

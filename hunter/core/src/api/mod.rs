@@ -86,6 +86,7 @@ pub fn configure_core_routes(cfg: &mut web::ServiceConfig) {
         .route(WALLET_ID_PATH, web::get().to(handlers::system::get_wallet))
         .route(WALLET_ID_PATH, web::put().to(handlers::system::update_wallet))
         .route(WALLET_ID_PATH, web::delete().to(handlers::system::delete_wallet))
+        .route("/api/own-wallets", web::get().to(handlers::system::list_own_wallets))
         // Tags
         .route("/api/tags", web::get().to(handlers::system::list_tags))
         .route("/api/tags", web::post().to(handlers::system::create_tag))

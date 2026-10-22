@@ -4,7 +4,7 @@ import { BarTradesPanel } from 'components/tokens/BarTradesPanel';
 import type { TokenHighlight } from 'components/tokens/useTokenHighlight';
 import { useFlowReasons } from 'hooks/useFlowReasons';
 import type { IxPatternTarget } from 'hooks/useIxPatternTarget';
-import { useProfileWallets } from 'hooks/useProfileWallets';
+import { useOwnWallets } from 'hooks/useOwnWallets';
 import { classifyOptsForTag, type FrozenFlowTag } from 'lib/flow/tapeClassify';
 import { useGetTokenDetailQuery, useGetTokenTradesQuery } from 'store/apiSlice';
 import type { ChartEventMarker } from 'components/token-price-chart/types';
@@ -56,15 +56,11 @@ export function MintBarTradesPanel({
   const { data: detail } = useGetTokenDetailQuery(mint, { skip });
   const trades = data ?? EMPTY_TRADES;
 
-  const myWalletAddresses = useProfileWallets();
-  const mine = useMemo(
-    () => new Set(myWalletAddresses.filter((w) => w.isMine).map((w) => w.address)),
-    [myWalletAddresses],
-  );
+  const mine = useOwnWallets();
 
   const classifyOpts = useMemo(
-    () => classifyOptsForTag(patternTarget?.tag ?? null, detail?.creator_wallet),
-    [patternTarget, detail?.creator_wallet],
+    () => classifyOptsForTag(patternTarget?.tag ?? null, detail?.creator_wallet, mine),
+    [patternTarget, detail?.creator_wallet, mine],
   );
   const flowReasons = useFlowReasons(trades, classifyOpts);
 

@@ -214,6 +214,14 @@ export const sharedApi = baseApi.injectEndpoints({
       providesTags: ['Profiles'],
       keepUnusedDataFor: 120,
     }),
+    // Pubkeys of every trader wallet of ours (archived too): the one source of
+    // "mine" for badges and for the tag exclusion. Both bins serve it. Wallets are
+    // added/removed from the live Wallets page, which invalidates 'TraderWallet'.
+    getOwnWallets: builder.query<string[], void>({
+      query: () => '/api/own-wallets',
+      providesTags: ['TraderWallet'],
+      keepUnusedDataFor: 120,
+    }),
     // System reads shared app-wide (header + price toggle). Folding them into
     // RTK Query collapses the StrictMode double-fire and the multiple
     // independent callers into a single deduped request per cache key.
@@ -499,6 +507,7 @@ export const {
   useLazyGetSolPriceQuery,
   useGetSettingsQuery,
   useGetProfilesQuery,
+  useGetOwnWalletsQuery,
   useUpdateSettingsMutation,
   useGetStrategyRegistryQuery,
   useGetFingerprintsQuery,
