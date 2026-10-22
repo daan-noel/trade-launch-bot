@@ -242,6 +242,12 @@ impl WalletRuntime {
         self.for_each_trader(|trader| trader.release_sol_for_position(position_id));
     }
 
+    /// The buy behind `position_id` landed at `slot`: settle its earmark on whichever
+    /// trader holds it (see [`Self::release_commitment`] for why every trader).
+    pub fn settle_commitment(&self, position_id: &str, slot: Option<u64>) {
+        self.for_each_trader(|trader| trader.settle_reservation(position_id, slot));
+    }
+
     pub fn signer(&self, pubkey: &str) -> Option<Arc<Keypair>> {
         self.slots.read().expect("wallets").get(pubkey).map(|s| s.signer.clone())
     }
@@ -312,7 +318,7 @@ impl WalletRuntime {
     /// loaded traders owns.
     pub fn on_account(&self, pubkey: &str, lamports: u64, data: &[u8], slot: u64) {
         if let Some(trader) = self.trader(pubkey) {
-            trader.update_balance_lamports_cache(lamports);
+            trader.update_balance_lamports_at_slot(lamports, slot);
             return;
         }
         let Ok(pk) = pubkey.parse::<Pubkey>() else {
@@ -453,10 +459,12 @@ impl WalletRuntime {
             (slot.signer.clone(), slot.name.clone(), slot.trader.clone())
         };
         let (trader, init_error) = self.factory.build(signer.clone(), nonces.clone()).await;
-        // The SOL earmarks of this wallet's open positions live on the trader. A fresh
-        // trader starts at zero, so carry them over or `max_committed_sol` forgets them.
+        // The SOL earmarks of this wallet's in-flight buys live on the trader. A fresh
+        // trader starts at zero, so carry them over, settle state included, or the
+        // floor forgets SOL already promised to a buy. Tasks still holding the old
+        // trader release through `release_commitment`, which reaches this one.
         for entry in old.position_commitments.iter() {
-            trader.commit_sol_for_position(entry.key().clone(), *entry.value());
+            trader.restore_reservation(entry.key().clone(), *entry.value());
         }
         self.slots.write().expect("wallets").insert(
             pubkey.to_string(),
@@ -622,5 +630,35 @@ mod tests {
         assert_eq!(primary.committed_lamports(), 0);
         rt.release_commitment(&pg_id);
         assert_eq!(other.committed_lamports(), 0, "idempotent");
+    }
+
+    /// Buys decided in one instant on one wallet each see the SOL the others took,
+    /// and a landed buy stops holding SOL back once the balance shows it spent —
+    /// a closed position can never keep a wallet blocked (the 2026-10-21 misses).
+    #[tokio::test]
+    async fn the_floor_reserves_atomically_and_frees_landed_buys() {
+        let rt = runtime();
+        let w = load_inert(&rt, "w");
+        // 0.35 SOL, 0.02 floor: three 0.1 buys fit, the fourth does not.
+        w.update_balance_lamports_at_slot(350_000_000, 10);
+        let ids: Vec<String> = (0..4).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        assert!(w.try_reserve_buy(&ids[0], 100_000_000));
+        assert!(w.try_reserve_buy(&ids[1], 100_000_000));
+        assert!(w.try_reserve_buy(&ids[2], 100_000_000));
+        assert!(!w.try_reserve_buy(&ids[3], 100_000_000));
+        assert!(w.try_reserve_buy(&ids[0], 100_000_000), "a retry keeps its earmark");
+
+        // Two buys land at slot 11; a failed one is released.
+        w.settle_reservation(&ids[0], Some(11));
+        w.settle_reservation(&ids[1], Some(11));
+        rt.release_commitment(&ids[2]);
+        assert_eq!(w.committed_lamports(), 200_000_000, "the balance does not show them yet");
+        // The push that shows the spend: their earmarks go, the SOL is not freed twice.
+        w.update_balance_lamports_at_slot(150_000_000, 11);
+        assert_eq!(w.committed_lamports(), 0);
+        assert!(w.try_reserve_buy(&ids[3], 100_000_000));
+        // A replayed older push cannot resurrect the spent SOL.
+        w.update_balance_lamports_at_slot(350_000_000, 10);
+        assert_eq!(w.cached_balance_lamports(), Some(150_000_000));
     }
 }

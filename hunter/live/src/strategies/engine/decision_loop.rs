@@ -243,7 +243,6 @@ async fn run_loop(
         inflight: inflight.clone(),
         buy_journal,
         registry: registry.clone(),
-        engine_fill_tx: Some(fill_tx.clone()),
         wallets: wallets.clone(),
         ping_stamps: ping_stamps.clone(),
     };
@@ -323,20 +322,10 @@ async fn run_loop(
     // Adopt PG position rows + re-entry episode counters + copycat-guard memory.
     // Snapshot the settings first — a `watch::Ref` must never be held across an await.
     let boot_settings = settings.borrow().clone();
+    // No SOL earmark is re-made for the adopted bags: their buys landed, so the
+    // wallet balance already shows that SOL spent, and `max_committed_sol` counts
+    // them from the registry (`open_exposure_lamports`).
     let _ = super::boot::adopt_from_db(&strategy_repo, &mut state, &registry, &boot_settings).await;
-    // The SOL earmark lives in memory. Without this a restart reads zero committed
-    // while the adopted bags are still open, and `max_committed_sol` lets a whole new
-    // budget on top of them.
-    for position in registry.positions_for_mode(TradeMode::Real) {
-        let Some(meta) = registry.get(position) else { continue };
-        let Some(entry_sol) = meta.entry_sol else { continue };
-        if let Some(trader) = wallets.trader(&meta.wallet) {
-            trader.commit_sol_for_position(
-                meta.pg_id.to_string(),
-                trading_core::config::constants::sol_to_lamports(entry_sol).max(0) as u64,
-            );
-        }
-    }
 
     // Recovery reaper (buy adopt/drop + exit redrive + cleared Holding + ExitStuck
     // bag + stale ExitPending bag-check). Immediate first tick, then every 60 s.
@@ -847,15 +836,10 @@ fn dispatch_buy(
                     return;
                 }
             };
-            // The floor reads the wallet that pays, not the primary.
-            if !signing_trader.can_commit_buy(lamports) {
-                warn!(mint = %mint_s, lamports, wallet = %signing_wallet, "real buy blocked by SOL balance-floor guard");
-                fail_entry_why(real_deps, meta.pg_id, intent, "blocked by the SOL balance-floor guard".into());
-                return;
-            }
-            if let Some(max_sol) = settings.borrow().max_committed_sol {
+            let max_committed_sol = settings.borrow().max_committed_sol;
+            if let Some(max_sol) = max_committed_sol {
                 let ceiling = sol_to_lamports(max_sol).max(0) as u64;
-                let committed = signing_trader.committed_lamports();
+                let committed = open_exposure_lamports(registry, &signing_trader, &signing_wallet, meta.pg_id);
                 if committed.saturating_add(lamports) > ceiling {
                     warn!(
                         mint = %mint_s, lamports, committed, ceiling,
@@ -864,6 +848,20 @@ fn dispatch_buy(
                     fail_entry_why(real_deps, meta.pg_id, intent, "blocked by the max_committed_sol guard".into());
                     return;
                 }
+            }
+            // The floor reads the wallet that pays, not the primary. Check and earmark
+            // are one step, so buys decided in the same instant on one wallet each see
+            // the SOL the others took. Every exit from here emits a fill outcome, and
+            // each terminal one releases the earmark.
+            if !signing_trader.try_reserve_buy(&meta.pg_id.to_string(), lamports) {
+                warn!(
+                    mint = %mint_s, lamports, wallet = %signing_wallet,
+                    balance = ?signing_trader.cached_balance_lamports(),
+                    reserved = signing_trader.committed_lamports(),
+                    "real buy blocked by SOL balance-floor guard"
+                );
+                fail_entry_why(real_deps, meta.pg_id, intent, "blocked by the SOL balance-floor guard".into());
+                return;
             }
 
             let (creator, token_program_id, cashback) = token_cache
@@ -916,6 +914,28 @@ fn dispatch_buy(
             fail_entry(&real_deps.fill_tx, intent, FillFailReason::Fatal);
         }
     }
+}
+
+/// SOL (lamports) `wallet` has in open real positions, other than `exclude`: an
+/// entered position counts what its buy paid, one still entering counts its
+/// earmark. Read from the registry (the positions this engine holds), never from
+/// the earmark ledger alone — a landed buy's earmark is gone while its bag is not.
+fn open_exposure_lamports(
+    registry: &PositionRegistry,
+    trader: &crate::trader::PumpFunTrader,
+    wallet: &str,
+    exclude: uuid::Uuid,
+) -> u64 {
+    registry
+        .positions_for_mode(TradeMode::Real)
+        .into_iter()
+        .filter_map(|id| registry.get(id))
+        .filter(|meta| meta.pg_id != exclude && meta.wallet == wallet)
+        .map(|meta| match meta.entry_sol {
+            Some(sol) => sol_to_lamports(sol).max(0) as u64,
+            None => trader.reserved_lamports_for(&meta.pg_id.to_string()).unwrap_or(0),
+        })
+        .sum()
 }
 
 fn dispatch_sell(

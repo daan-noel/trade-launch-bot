@@ -305,7 +305,6 @@ pub async fn manual_sell(
     // actually cleared (index lag) and records the real sell's exit price; the
     // engine's reaper is the ultimate backstop for anything still unresolved.
     {
-        use trading_core::models::trade::TradeType;
         let state = app_state.get_ref().clone();
         let mint = body.mint_address.clone();
         let wallet = trader.wallet_pubkey();
@@ -326,58 +325,36 @@ pub async fn manual_sell(
                 if positions.is_empty() {
                     break; // nothing to reconcile
                 }
-                // Confirm via the trades feed that the bag is really cleared before
-                // closing — the on-chain sell may not have indexed yet (index lag).
-                let cleared = matches!(
-                    state.trade_repo().net_token_amount_by_wallet_and_mint(&wallet, &mint).await,
-                    Ok(balance) if balance <= 0
-                );
-                if !cleared {
-                    tokio::time::sleep(std::time::Duration::from_secs(RECONCILE_RETRY_SECS)).await;
-                    continue;
-                }
-                // The close books what the wallet's sell left in the wallet, shared by
-                // the tokens each row still held. A sell not indexed yet is retried,
-                // then left to the reaper, never booked from a made-up proceeds figure.
-                let last_sell = state
-                    .trade_repo()
-                    .find_latest_by_wallet_mint_type(&wallet, &mint, TradeType::Sell)
-                    .await
-                    .ok()
-                    .flatten();
-                let Some(last_sell) = last_sell else {
-                    tokio::time::sleep(std::time::Duration::from_secs(RECONCILE_RETRY_SECS)).await;
-                    continue;
-                };
-                for pos in positions {
-                    use crate::strategies::engine::orphan_exit;
-                    let fill = orphan_exit::wallet_fill_from_sell(
-                        &state.trade_repo(),
-                        &wallet,
-                        &last_sell,
-                        pos.remaining_token_amount(),
-                    )
-                    .await;
-                    // Engine path when registry has the row; PG book-close on miss
-                    // (post-restart) so Holding never sticks after a Trade sell.
-                    if state.positions.engine_id(pos.id).is_some() {
-                        let _ = state.engine.reconcile_cleared(pos.id, fill).await;
-                    } else {
-                        if let Err(e) = orphan_exit::book_externally_cleared_pg(
-                            &state.strategy_repo,
-                            pos.id,
-                            fill,
-                            "Manual",
-                        )
-                        .await
-                        {
-                            tracing::warn!(
-                                position_id = %pos.id,
-                                "manual-sell reconcile: PG book-close failed: {e}"
-                            );
-                        }
+                // The bag is gone only when the chain says so: the sweep above sold
+                // every account of the mint, so the wallet must read empty of it.
+                // Held = this sell not visible at `confirmed` yet; retried.
+                use crate::strategies::engine::orphan_exit::{self, ChainBag};
+                match orphan_exit::chain_bag(&state.strategy_repo, &trader, &wallet, &mint).await {
+                    ChainBag::Cleared => {}
+                    ChainBag::Short { held, expected } => {
+                        tracing::warn!(mint = %mint, held, expected,
+                            "manual-sell reconcile: the wallet still holds part of the mint — left open");
+                        break;
+                    }
+                    ChainBag::Held | ChainBag::Unsettled | ChainBag::Unknown => {
+                        tokio::time::sleep(std::time::Duration::from_secs(RECONCILE_RETRY_SECS)).await;
+                        continue;
                     }
                 }
+                // The close books what this sell left in the wallet, shared by the
+                // tokens each row still held. A sell not indexed yet is retried, then
+                // left to the reaper, never booked from a made-up proceeds figure.
+                let claimed = state.strategy_repo.claimed_sell_signatures(&wallet, &mint).await.unwrap_or_default();
+                let indexed = matches!(
+                    state.trade_repo().find_latest_unclaimed_sell(&wallet, &mint, &claimed).await,
+                    Ok(Some(_))
+                );
+                if !indexed {
+                    tokio::time::sleep(std::time::Duration::from_secs(RECONCILE_RETRY_SECS)).await;
+                    continue;
+                }
+                let deps = crate::api::handlers::strategies::positions::orphan_deps_from_state(&state);
+                orphan_exit::close_cleared_bag(&deps, &trader, &wallet, &mint).await;
                 break;
             }
         });

@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use hunter_engine::event::{Event, Fill, FillFailReason, IntentId};
 
-use pump_trader::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
+use pump_trader::{classify_swap_revert, NonceTxState, SwapDirection, SwapRetryDecision, SwapRoute};
 
 use trading_core::config::constants::{
     lamports_to_sol, COMPUTE_UNIT_LIMIT_AMM, COMPUTE_UNIT_LIMIT_CURVE_BUY,
@@ -41,7 +41,7 @@ use trading_core::storage::repositories::trade_repo::{SigLegs, TradeRepo};
 
 use crate::trader::{PumpFunTrader, SigStatus};
 
-use super::{orphan_exit, sell_backfill};
+use super::sell_backfill;
 use super::{FillSigStore, FillSigs, InFlightGuards, PositionRegistry, SubmittedBuyJournal};
 
 /// How long to wait for the entry fill on the feed before the RPC watchdog fires
@@ -251,13 +251,8 @@ pub struct RealExecDeps {
     pub inflight: InFlightGuards,
     /// Process-local signed-buy journal (M2) — sync before send; PG is best-effort.
     pub buy_journal: SubmittedBuyJournal,
-    /// Live position registry — sibling ExternallyCleared after a mint clears.
+    /// Live position registry — which exit a position has in flight.
     pub registry: PositionRegistry,
-    /// Engine event channel (same as the decision loop's fill_tx). When set,
-    /// successful mint clears fold `ExternallyCleared` for siblings still in-engine.
-    /// Orphan sells use a private fill_tx for their own outcome, so they pass the
-    /// loop channel here separately.
-    pub engine_fill_tx: Option<mpsc::Sender<Event>>,
     /// Loaded wallets. The entry and the exit swap `trader` to the position's
     /// pubkey before they sign.
     pub wallets: Arc<crate::wallets::WalletRuntime>,
@@ -362,9 +357,9 @@ pub async fn run_entry(mut deps: RealExecDeps, order: BuyOrder) {
     let wallet = deps.trader.wallet_pubkey();
     let sol_amount = order.lamports as f64 / 1_000_000_000.0;
 
-    // SOL earmark — released on Fatal / sink terminal / sell-start / reaper drop.
-    deps.trader
-        .commit_sol_for_position(order.pg_id.to_string(), order.lamports);
+    // The SOL earmark was made with the floor check in the decision loop
+    // (`try_reserve_buy`); it is settled on the fill and released on Fatal / sink
+    // terminal / sell-start / reaper drop.
 
     // Adopt a fill from signatures this position already submitted (engine retry
     // or crash between sign and confirm) before sending again. First attempt
@@ -384,8 +379,7 @@ pub async fn run_entry(mut deps: RealExecDeps, order: BuyOrder) {
     if let Some((first_signed_at, _)) = deps.buy_journal.signed(order.pg_id) {
         let lane = order.ping_stamp.map(|s| s.lane);
         if snipe_retry_expired(lane, first_signed_at, Utc::now()) {
-            deps.trader
-                .release_sol_for_position(&order.pg_id.to_string());
+            release_sol(&deps, order.pg_id);
             note_entry_error(
                 &deps,
                 &order,
@@ -419,8 +413,7 @@ pub async fn run_entry(mut deps: RealExecDeps, order: BuyOrder) {
             mint = %order.mint,
             "real buy skipped — token already migrated (curve snipe would revert)"
         );
-        deps.trader
-            .release_sol_for_position(&order.pg_id.to_string());
+        release_sol(&deps, order.pg_id);
         note_entry_error(
             &deps,
             &order,
@@ -759,6 +752,10 @@ async fn emit_entry_filled(
     // cache only when the buy returned no fact (never-signed / adopt paths) — that
     // cache is unreliable under concurrent same-mint snipes (see `SnipeBuy`).
     let token_account = funded_account.or_else(|| deps.trader.cached_token_account(&order.mint));
+    // The buy's SOL has left the wallet: its earmark lasts only until the cached
+    // balance shows it (a reading at or after this slot).
+    settle_sol(deps, order.pg_id, legs.last_slot);
+    audit_persisted(deps, &order.mint, vec![sig.clone()], order.decided_at, false);
     deps.fill_sigs.put(
         order.intent.clone(),
         // Earliest leg — the buy's `entry_slot`, matching `first_block_time`
@@ -854,8 +851,7 @@ async fn emit_entry_outcome(
         }
         EntryOutcome::Fatal(cause) => {
             note_entry_error(deps, order, &cause).await;
-            deps.trader
-                .release_sol_for_position(&order.pg_id.to_string());
+            release_sol(deps, order.pg_id);
             let _ = deps
                 .fill_tx
                 .send(Event::FillFailed {
@@ -1235,8 +1231,7 @@ pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
     };
 
     // Release FIRST — must fire even if the process crashes mid-exit.
-    deps.trader
-        .release_sol_for_position(&order.pg_id.to_string());
+    release_sol(&deps, order.pg_id);
 
     if order.token_amount == 0 {
         // Nothing to sell — treat as cleared at zero.
@@ -1300,6 +1295,8 @@ pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
                 .map(|e| e.value().is_migrated)
                 .unwrap_or(false);
 
+        // A record left by an earlier sell on this mint is not this attempt's.
+        let _ = deps.trader.take_signed_sell(&order.mint);
         let submit = {
             let send = submit_one_sell(&deps, &order, attempt, is_migrated, cashback);
             match tokio::time::timeout(SELL_SEND_TIMEOUT, send).await {
@@ -1311,26 +1308,29 @@ pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
             }
         };
 
+        let send_failed = submit.is_err();
         let sig = match submit {
-            Ok(Some(sig)) => {
-                sell_sigs.push(sig.clone());
-                // Write-ahead, off the exit path: the row names this sell from here
-                // on, so a restart or a reaper checks it on chain instead of selling
-                // the bag a second time (from a shared account that is a sibling's).
-                let (repo, pg_id, sig_bg) = (deps.strategy_repo.clone(), order.pg_id, sig.clone());
-                tokio::spawn(async move {
-                    if let Err(e) = repo.append_exit_sig(pg_id, &sig_bg).await {
-                        warn!(pg = %pg_id, "append_exit_sig failed: {e}");
-                    }
-                });
-                Some(sig)
-            }
-            Ok(None) => None,
+            Ok(sig) => sig,
             Err(e) => {
                 warn!(mint = %order.mint, attempt, "real sell attempt failed: {e}");
-                None
+                // A send that errored or timed out may still have reached the
+                // network, and a durable-nonce sell never expires: its signature
+                // is this exit's until it is proven unable to execute.
+                deps.trader.take_signed_sell(&order.mint)
             }
         };
+        if let Some(sig) = &sig {
+            sell_sigs.push(sig.clone());
+            // Write-ahead, off the exit path: the row names this sell from here
+            // on, so a restart or a reaper checks it on chain instead of selling
+            // the bag a second time (from a shared account that is a sibling's).
+            let (repo, pg_id, sig_bg) = (deps.strategy_repo.clone(), order.pg_id, sig.clone());
+            tokio::spawn(async move {
+                if let Err(e) = repo.append_exit_sig(pg_id, &sig_bg).await {
+                    warn!(pg = %pg_id, "append_exit_sig failed: {e}");
+                }
+            });
+        }
 
         // L0 twin of `snipe_latency` for the exit leg. Emitted on the FIRST
         // attempt only: attempt 1+ is a tip-escalating retry whose clock is the
@@ -1347,7 +1347,7 @@ pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
                     decide_to_ack_ms = (ack_at - decided_at).num_milliseconds(),
                     route = if is_migrated { "amm" } else { "curve" },
                     sig = sig.as_deref(),
-                    send_ok = sig.is_some(),
+                    send_ok = !send_failed && sig.is_some(),
                     "exit_latency"
                 );
             }
@@ -1389,7 +1389,18 @@ pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
                 .get(&order.mint)
                 .map(|e| e.value().is_migrated)
                 .unwrap_or(is_migrated);
+        // The send of this sell failed, so it may or may not be on the network.
+        // Make it unable to execute before anything else is sent: once its nonce
+        // has moved on, a sell the chain has not seen can never land, and the next
+        // attempt is safe. Unprovable (no nonce anchor, RPC failure) ⇒ the normal
+        // never-resend path below.
+        let burned = send_failed && deps.trader.burn_nonce_tx(&sig).await == NonceTxState::Dead;
         let state = deps.trader.signature_state_detailed(&sig).await;
+        if burned && matches!(state, Ok(SigStatus::Pending)) {
+            info!(mint = %order.mint, attempt, sig = %sig,
+                "real sell: failed send can never execute — sending the next attempt");
+            continue;
+        }
         if matches!(state, Ok(SigStatus::Reverted { .. })) {
             let cu_limit = if is_migrated {
                 COMPUTE_UNIT_LIMIT_AMM
@@ -1428,6 +1439,7 @@ pub async fn run_exit(mut deps: RealExecDeps, mut order: SellOrder) {
                         &deps.trade_repo,
                         &order.mint,
                         &sell_sigs,
+                        exit_started,
                     )
                     .await
                         > 0
@@ -1598,6 +1610,13 @@ async fn finish_cleared_sell(
         .token_account
         .clone()
         .or_else(|| deps.trader.cached_token_account(&order.mint));
+    // Only the sells the feed saw land: a dead retry has nothing to persist.
+    let landed: Vec<String> = sell_sigs
+        .iter()
+        .filter(|s| deps.trade_signals.observed_legs(s).is_some())
+        .cloned()
+        .collect();
+    audit_persisted(deps, &order.mint, landed, Utc::now() - PERSIST_AUDIT_LOOKBACK, true);
     deps.fill_sigs.put(
         order.intent.clone(),
         // Latest leg — the sell's `exit_slot`, matching `last_block_time` below.
@@ -1633,22 +1652,10 @@ async fn finish_cleared_sell(
         })
         .await;
 
-    // Sibling book-close when the wallet mint bag is gone (PG net — no RPC).
-    let engine_tx = deps
-        .engine_fill_tx
-        .clone()
-        .unwrap_or_else(|| deps.fill_tx.clone());
-    let _ = orphan_exit::close_siblings_if_mint_cleared(
-        &deps.strategy_repo,
-        &deps.trade_repo,
-        &deps.registry,
-        &engine_tx,
-        &wallet,
-        &order.mint,
-        order.pg_id,
-        &fill,
-    )
-    .await;
+    // No sibling is touched here: this sell sold `order.token_amount` and nothing
+    // else, so it cannot have emptied another position's bag. A bag that left the
+    // wallet outside the bot is the reaper's to prove on chain
+    // (`orphan_exit::reconcile_externally_cleared_holdings`).
 
     // Fire-and-forget rent reclaim — the close this fill already booked the fee of.
     // The account this position funded, not the per-mint cache: two buys on one
@@ -1701,6 +1708,62 @@ async fn has_other_open_position(
             true
         }
     }
+}
+
+/// How long after a fill confirmed from the in-memory feed its legs must be in
+/// `trades` — the batch writer flushes every 150 ms, so this is that with room.
+const PERSIST_AUDIT_DELAY: Duration = Duration::from_secs(30);
+/// Lower bound of a sell's legs for the audit: before any exit's first send.
+const PERSIST_AUDIT_LOOKBACK: chrono::Duration = chrono::Duration::minutes(30);
+
+/// A fill is confirmed from the in-memory feed before the batch writer persists
+/// it, and a leg that never reaches `trades` blinds every later reader (the
+/// reaper's candidates, the chart, the lake). Check once after the writer's
+/// window: a missing sell leg is healed from its signature (one batched
+/// `getTransaction`, only when a leg is missing); a missing buy leg is reported.
+fn audit_persisted(
+    deps: &RealExecDeps,
+    mint: &str,
+    sigs: Vec<String>,
+    since: chrono::DateTime<Utc>,
+    heal: bool,
+) {
+    if sigs.is_empty() {
+        return;
+    }
+    let (trader, trade_repo, mint) = (deps.trader.clone(), deps.trade_repo.clone(), mint.to_string());
+    tokio::spawn(async move {
+        tokio::time::sleep(PERSIST_AUDIT_DELAY).await;
+        let Ok(present) = trade_repo.signatures_with_legs(&mint, &sigs, since).await else {
+            return;
+        };
+        let missing: Vec<String> = sigs.into_iter().filter(|s| !present.contains(s)).collect();
+        if missing.is_empty() {
+            return;
+        }
+        warn!(mint = %mint, sigs = ?missing, side = if heal { "sell" } else { "buy" },
+            "own fill confirmed on the feed but never persisted to trades");
+        if heal {
+            sell_backfill::heal_missing_sell_legs(&trader, &trade_repo, &mint, &missing, since).await;
+        }
+    });
+}
+
+/// Release a position's SOL earmark on every trader that may hold it: the one in
+/// hand, and the wallet's current trader (a rebuild replaces it while this task
+/// still holds the old one).
+fn release_sol(deps: &RealExecDeps, pg_id: Uuid) {
+    let id = pg_id.to_string();
+    deps.trader.release_sol_for_position(&id);
+    deps.wallets.release_commitment(&id);
+}
+
+/// Settle a position's earmark on its fill — see [`release_sol`] for why on every
+/// trader.
+fn settle_sol(deps: &RealExecDeps, pg_id: Uuid, slot: Option<u64>) {
+    let id = pg_id.to_string();
+    deps.trader.settle_reservation(&id, slot);
+    deps.wallets.settle_commitment(&id, slot);
 }
 
 async fn submit_one_sell(

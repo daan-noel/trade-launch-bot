@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use tracing::{info, warn};
 
 use ingest_pumpfun::{
@@ -44,9 +44,11 @@ use crate::trader::PumpFunTrader;
 /// legs belonging to `(wallet, mint)` that the feed missed. Returns the number of
 /// legs written.
 ///
-/// Idempotent: `insert_many` is `ON CONFLICT DO NOTHING` on
-/// `(block_time, tx_signature, leg_index)`, so re-running after the feed catches
-/// up (or across two reaper ticks) writes nothing twice.
+/// Idempotent by signature: a signature that already has a leg on `mint` since
+/// `since` is neither fetched nor written. The primary key cannot do this — the
+/// feed stamps a leg with its own receive time and a healed leg carries the
+/// chain's block time, so the same leg under two times would be two rows (and
+/// the `trades` net would count the sell twice).
 ///
 /// Best-effort by contract — every failure returns 0 and logs. A heal that cannot
 /// run must leave the caller exactly where it was, never worse.
@@ -55,8 +57,20 @@ pub async fn heal_missing_sell_legs(
     trade_repo: &TradeRepo,
     mint: &str,
     sigs: &[String],
+    since: DateTime<Utc>,
 ) -> usize {
     let sigs: Vec<String> = sigs.iter().filter(|s| !s.is_empty()).cloned().collect();
+    if sigs.is_empty() {
+        return 0;
+    }
+    let present = match trade_repo.signatures_with_legs(mint, &sigs, since).await {
+        Ok(present) => present,
+        Err(e) => {
+            warn!(mint = %mint, "sell heal: present-leg check failed: {e}");
+            return 0;
+        }
+    };
+    let sigs: Vec<String> = sigs.into_iter().filter(|s| !present.contains(s)).collect();
     if sigs.is_empty() {
         return 0;
     }
@@ -75,11 +89,18 @@ pub async fn heal_missing_sell_legs(
     for (sig, result) in sigs.iter().zip(results) {
         // `None` = missing, errored, or reverted on-chain — nothing to heal.
         let Some(result) = result else { continue };
-        let Some(update) = rpc_to_protobuf(&wrap_transaction_result(sig, &result)) else {
+        let wrapped = wrap_transaction_result(sig, &result);
+        let Some(update) = rpc_to_protobuf(&wrapped) else {
             warn!(mint = %mint, sig = %sig, "sell heal: tx did not lower to protobuf");
             continue;
         };
-        let DecodeOutput::Events(events) = decoder.decode_protobuf(&update, Utc::now()) else {
+        // The chain's own time for the leg; `now` only when the node gave none.
+        let block_time = wrapped
+            .get("blockTime")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|ts| DateTime::from_timestamp(ts, 0))
+            .unwrap_or_else(Utc::now);
+        let DecodeOutput::Events(events) = decoder.decode_protobuf(&update, block_time) else {
             continue;
         };
         legs.extend(

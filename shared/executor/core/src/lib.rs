@@ -50,7 +50,7 @@ pub use config::{
     CacheCfg, ComputeBudgetCfg, FeeShapeCfg, JitoTipCfg, LimitsCfg, NonceCfg, RetryCfg, SenderCfg, SlippageCfg,
     TraderConfig, SENDER_IDLE_CLOSE_MS, SENDER_KEEP_WARM_MS,
 };
-pub use engine::{buy_lamports_checked, Engine};
+pub use engine::{buy_lamports_checked, BalanceReading, Engine, Settled, SolReservation, RESERVE_FLOOR_LAMPORTS};
 pub use error::{Context, Result, TradeError};
 pub use fee_shape::{draw_compute_budget, pick_layout};
 pub use ix_layout::{DecoStep, IxLayout, LayoutKind};

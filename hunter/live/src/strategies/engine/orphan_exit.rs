@@ -1,16 +1,25 @@
 //! Shared orphan / recovery exit path — sell via [`exec_real::run_exit`] (feed
 //! confirm) and book PG rows without requiring a live engine registry entry.
 //!
-//! Helius budget: no account/balance RPC here. Cleared/stranded detection is
-//! Postgres `trades` net only. Sell send + existing feed confirm live inside
-//! `run_exit`. The one exception is [`fill_from_latest_sell`], which spends a
-//! single batched `getTransaction` to heal a feed-missed sell — only when a bag
-//! is already known cleared and PG still shows no sell leg, i.e. the alternative
-//! is booking a false −100%.
+//! **A bag is gone only when the chain says so.** The `trades` net is a cheap
+//! pre-filter and nothing more: a leg the feed missed, one still in the writer's
+//! batch, or a healed duplicate makes it lie in both directions. Every decision
+//! that closes a row without its own landed sell, or sells from an account a
+//! sibling shares, first reads the wallet's token accounts for the mint
+//! ([`chain_bag`], one `getTokenAccountsByOwner`) and compares them with what the
+//! open rows still hold. A failed read decides nothing.
+//!
+//! Helius: that read runs only on these recovery paths (orphan sell, reaper,
+//! manual action), throttled per `(wallet, mint)`; never on the hot path. Sell
+//! send + feed confirm live inside `run_exit`. [`landed_fill_of_own_sigs`] spends
+//! one batched `getTransaction` only for a row's own sell signatures the feed has
+//! no leg for.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use dashmap::DashMap;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -146,7 +155,6 @@ pub fn spawn_orphan_sell(
         inflight: InFlightGuards::new(),
         buy_journal: SubmittedBuyJournal::new(),
         registry: deps.registry.clone(),
-        engine_fill_tx: Some(deps.fill_tx.clone()),
         wallets: deps.wallets.clone(),
         ping_stamps: Arc::new(dashmap::DashMap::new()),
     };
@@ -175,14 +183,51 @@ pub fn spawn_orphan_sell(
         let _mint_guard = mint_guard;
         // A sell this row already sent may have landed with the feed missing it. Selling
         // again would sell from the (possibly shared) account: a sibling's tokens.
-        if let Some(trader) = sell_trader.as_ref() {
-            if let Some(fill) = landed_fill_of_own_sigs(&trade_repo, trader, &wallet, &position).await {
-                info!(position_id = %pg_id, "orphan_exit: the row's own sell already landed — booking, not reselling");
-                if let Some(engine_id) = registry.engine_id(pg_id) {
-                    let _ = engine_fill_tx.send(Event::ExternallyCleared { position: engine_id, fill }).await;
-                } else if let Err(e) = book_externally_cleared_pg(&repo, pg_id, fill, &exit_reason).await {
-                    warn!(position_id = %pg_id, "orphan_exit: book landed sell failed: {e}");
+        let Some(trader) = sell_trader.as_ref() else { return };
+        if let Some(fill) = landed_fill_of_own_sigs(&trade_repo, trader, &wallet, &position).await {
+            info!(position_id = %pg_id, "orphan_exit: the row's own sell already landed — booking, not reselling");
+            if let Some(engine_id) = registry.engine_id(pg_id) {
+                let _ = engine_fill_tx.send(Event::ExternallyCleared { position: engine_id, fill }).await;
+            } else if let Err(e) = book_externally_cleared_pg(&repo, pg_id, fill, &exit_reason).await {
+                warn!(position_id = %pg_id, "orphan_exit: book landed sell failed: {e}");
+            }
+            return;
+        }
+        // A sell this row sent earlier and that has not landed can still land —
+        // a durable-nonce tx never expires — and a second sell next to it sells
+        // the bag twice (from a shared account, a sibling's tokens). Every one of
+        // them must be provably unable to execute first.
+        // A Dump is the operator's explicit force and is the one exception.
+        if !prior_sells_dead(trader, &position.exit_tx_sigs()).await {
+            if !dump {
+                warn!(position_id = %pg_id, mint = %mint,
+                    "orphan_exit: an earlier sell of this row may still land — not re-selling; Verify once it settles");
+                return;
+            }
+            warn!(position_id = %pg_id, mint = %mint,
+                "orphan_exit: DUMP over an earlier sell that may still land — the operator forced it");
+        }
+        // A sell takes its amount from whatever the account holds, and siblings
+        // share it: sell only when the wallet still holds every open row's bag.
+        // A row written moments ago (this one, just marked stuck) waits out the
+        // read's lag once rather than giving up.
+        let mut verdict = chain_bag(&repo, trader, &wallet, &mint).await;
+        if verdict == ChainBag::Unsettled {
+            tokio::time::sleep(CHAIN_SETTLE.to_std().unwrap_or_default()).await;
+            verdict = chain_bag(&repo, trader, &wallet, &mint).await;
+        }
+        match verdict {
+            ChainBag::Held => {}
+            ChainBag::Cleared => {
+                info!(position_id = %pg_id, mint = %mint, "orphan_exit: the wallet holds none of this mint — booking the outside clear, not selling");
+                let fill = fill_from_latest_sell(&repo, &trade_repo, trader, &wallet, &position).await;
+                if let Err(e) = book_cleared_or_park_with(&repo, &registry, &engine_fill_tx, &position, fill).await {
+                    warn!(position_id = %pg_id, "orphan_exit: book cleared failed: {e}");
                 }
+                return;
+            }
+            verdict => {
+                park_unresolved(&repo, pg_id, &exit_reason, verdict).await;
                 return;
             }
         }
@@ -221,19 +266,6 @@ pub fn spawn_orphan_sell(
                     }
                     _ => {}
                 }
-                // Sibling book-close is handled inside run_exit/finish_cleared_sell
-                // when wallet net is cleared (PG). Also heal here if that path missed.
-                let _ = close_siblings_if_mint_cleared(
-                    &repo,
-                    &trade_repo,
-                    &registry,
-                    &engine_fill_tx,
-                    &wallet,
-                    &mint,
-                    pg_id,
-                    &fill,
-                )
-                .await;
             }
             Some(Event::FillFailed { reason: FillFailReason::Unconfirmed, .. }) => {
                 if let Ok(Some(mut pos)) = repo.find_position(pg_id).await {
@@ -270,6 +302,27 @@ pub fn spawn_orphan_sell(
     OrphanStart::Started
 }
 
+/// Whether none of `sigs` can execute any more: its durable nonce has moved on
+/// (`burn_nonce_tx` advances it when it has not), or the chain already has it —
+/// landed, reverted or not, a signature executes at most once (an earlier partial
+/// leg the caller has already accounted for). Anything unprovable (an anchor lost
+/// across a restart and a tx the chain has not seen, an RPC failure) is `false`:
+/// the caller must not send another sell.
+async fn prior_sells_dead(trader: &Arc<PumpFunTrader>, sigs: &[String]) -> bool {
+    for sig in sigs {
+        if trader.burn_nonce_tx(sig).await == pump_trader::NonceTxState::Dead {
+            continue;
+        }
+        if !matches!(
+            trader.signature_state_detailed(sig).await,
+            Ok(pump_trader::SigStatus::Reverted { .. } | pump_trader::SigStatus::Succeeded)
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Book one position closed from an external/manual clear (no sell). Prefer
 /// folding `ExternallyCleared` when the engine still owns the row; else PG-only.
 ///
@@ -284,15 +337,23 @@ pub async fn book_externally_cleared(
     pos: &StrategyPosition,
     fill: Fill,
 ) -> anyhow::Result<()> {
-    if let Some(engine_id) = deps.registry.engine_id(pos.id) {
-        let _ = deps
-            .fill_tx
-            .send(Event::ExternallyCleared { position: engine_id, fill })
-            .await;
+    book_externally_cleared_with(&deps.strategy_repo, &deps.registry, &deps.fill_tx, pos, fill).await
+}
+
+/// [`book_externally_cleared`] from the parts a spawned task holds.
+async fn book_externally_cleared_with(
+    repo: &StrategyRepo,
+    registry: &PositionRegistry,
+    fill_tx: &mpsc::Sender<Event>,
+    pos: &StrategyPosition,
+    fill: Fill,
+) -> anyhow::Result<()> {
+    if let Some(engine_id) = registry.engine_id(pos.id) {
+        let _ = fill_tx.send(Event::ExternallyCleared { position: engine_id, fill }).await;
         return Ok(());
     }
     let reason = pos.exit_reason.as_deref().unwrap_or("Manual");
-    book_externally_cleared_pg(&deps.strategy_repo, pos.id, fill, reason).await
+    book_externally_cleared_pg(repo, pos.id, fill, reason).await
 }
 
 /// Book an externally-cleared row, or **park it** when the proceeds cannot be
@@ -312,20 +373,27 @@ pub async fn book_cleared_or_park(
     pos: &StrategyPosition,
     fill: Option<Fill>,
 ) -> anyhow::Result<()> {
+    book_cleared_or_park_with(&deps.strategy_repo, &deps.registry, &deps.fill_tx, pos, fill).await
+}
+
+/// [`book_cleared_or_park`] from the parts a spawned task holds.
+async fn book_cleared_or_park_with(
+    repo: &StrategyRepo,
+    registry: &PositionRegistry,
+    fill_tx: &mpsc::Sender<Event>,
+    pos: &StrategyPosition,
+    fill: Option<Fill>,
+) -> anyhow::Result<()> {
     match fill {
-        Some(fill) => book_externally_cleared(deps, pos, fill).await,
+        Some(fill) => book_externally_cleared_with(repo, registry, fill_tx, pos, fill).await,
         None if pos.remaining_token_amount() == 0 => {
-            book_externally_cleared(
-                deps,
-                pos,
-                Fill {
-                    price: pos.exit_price.or(pos.entry_price).unwrap_or(0.0),
-                    sol: 0.0,
-                    token_amount: 0,
-                    at: Utc::now(),
-                },
-            )
-            .await
+            let fill = Fill {
+                price: pos.exit_price.or(pos.entry_price).unwrap_or(0.0),
+                sol: 0.0,
+                token_amount: 0,
+                at: Utc::now(),
+            };
+            book_externally_cleared_with(repo, registry, fill_tx, pos, fill).await
         }
         None => {
             warn!(
@@ -333,7 +401,7 @@ pub async fn book_cleared_or_park(
                 "orphan_exit: bag cleared but no sell leg found — parking rather than \
                  booking a zero-proceeds close"
             );
-            deps.strategy_repo.set_exit_parked(pos.id, true).await
+            repo.set_exit_parked(pos.id, true).await
         }
     }
 }
@@ -386,13 +454,12 @@ pub async fn book_externally_cleared_pg(
 
 /// Resolve a Manual/Recovery fill. A row with recorded exit signatures is closed
 /// only by those sells; a row with none (an operator or external clear) takes the
-/// wallet's latest sell on the mint (PG), healing the feed first when it has to.
+/// wallet's latest sell on the mint that no position has booked or sent.
 ///
 /// `None` when no sell leg for this bag exists anywhere — the caller must NOT
-/// substitute a zero (see [`book_cleared_or_park`]). Previously this returned a
-/// `sol: 0.0` fill in that case, which made a zero-proceeds close unavoidable in
-/// precisely the branch built for "the sell landed, the feed missed it".
+/// substitute a zero (see [`book_cleared_or_park`]).
 pub async fn fill_from_latest_sell(
+    strategy_repo: &StrategyRepo,
     trade_repo: &TradeRepo,
     trader: &Arc<PumpFunTrader>,
     wallet: &str,
@@ -405,30 +472,14 @@ pub async fn fill_from_latest_sell(
     if !pos.exit_tx_sigs().is_empty() {
         return landed_fill_of_own_sigs(trade_repo, trader, wallet, pos).await;
     }
-    let mut last_sell = trade_repo
-        .find_latest_by_wallet_mint_type(wallet, &pos.mint_address, TradeType::Sell)
+    // Every sell a position accounts for is excluded, so what is left is the one
+    // that cleared the bag outside the bot. Unknown claims decide nothing.
+    let claimed = strategy_repo.claimed_sell_signatures(wallet, &pos.mint_address).await.ok()?;
+    let sell = trade_repo
+        .find_latest_unclaimed_sell(wallet, &pos.mint_address, &claimed)
         .await
         .ok()
-        .flatten();
-    if last_sell.is_none() {
-        // The bag is gone but the feed shows no sell — the exact gap the
-        // signatures on the row exist to close.
-        let healed = super::sell_backfill::heal_missing_sell_legs(
-            trader,
-            trade_repo,
-            &pos.mint_address,
-            &pos.exit_tx_sigs(),
-        )
-        .await;
-        if healed > 0 {
-            last_sell = trade_repo
-                .find_latest_by_wallet_mint_type(wallet, &pos.mint_address, TradeType::Sell)
-                .await
-                .ok()
-                .flatten();
-        }
-    }
-    let sell = last_sell?;
+        .flatten()?;
     Some(wallet_fill_from_sell(trade_repo, wallet, &sell, pos.remaining_token_amount()).await)
 }
 
@@ -483,7 +534,7 @@ pub async fn landed_fill_of_own_sigs(
     }
     for heal in [false, true] {
         if heal
-            && super::sell_backfill::heal_missing_sell_legs(trader, trade_repo, &pos.mint_address, &sigs)
+            && super::sell_backfill::heal_missing_sell_legs(trader, trade_repo, &pos.mint_address, &sigs, pos.created_at)
                 .await
                 == 0
         {
@@ -532,57 +583,188 @@ fn pro_rata_sol(sol: f64, tokens: u64, sold: u64) -> f64 {
     sol * (tokens as f64 / sold as f64)
 }
 
-/// After a mint's wallet bag is cleared (PG net), close every other unsettled real
-/// row on that mint — engine siblings via `ExternallyCleared`, else PG.
-#[allow(clippy::too_many_arguments)]
-pub async fn close_siblings_if_mint_cleared(
-    repo: &StrategyRepo,
-    trade_repo: &TradeRepo,
-    registry: &PositionRegistry,
-    engine_fill_tx: &mpsc::Sender<Event>,
-    wallet: &str,
-    mint: &str,
-    exclude_pg: Uuid,
-    leader_fill: &Fill,
-) -> anyhow::Result<()> {
-    let net = trade_repo
-        .net_token_amount_by_wallet_and_mint(wallet, mint)
-        .await
-        .unwrap_or(i64::MAX);
-    if net > BAG_CLEARED_THRESHOLD_RAW {
-        return Ok(());
-    }
-    let siblings = repo
-        .find_unsettled_real_on_mint(wallet, mint, exclude_pg)
-        .await
-        .unwrap_or_default();
-    for sib in siblings {
-        // The leader's fill is wallet flow for the tokens its sell cleared; a
-        // sibling's share is that flow per token, not the price times its tokens.
-        let tokens = sib.remaining_token_amount();
-        let fill = Fill {
-            price: leader_fill.price,
-            sol: pro_rata_sol(leader_fill.sol, tokens, leader_fill.token_amount),
-            token_amount: tokens,
-            at: leader_fill.at,
-        };
-        if let Some(engine_id) = registry.engine_id(sib.id) {
-            let _ = engine_fill_tx
-                .send(Event::ExternallyCleared { position: engine_id, fill })
-                .await;
-            continue;
-        }
-        // The sibling's own reason, not a blanket `"Manual"` — its rule decided
-        // this exit too; the leader's sell merely cleared the shared bag first.
-        let reason = sib.exit_reason.clone().unwrap_or_else(|| "Manual".to_string());
-        if let Err(e) = book_externally_cleared_pg(repo, sib.id, fill, &reason).await {
-            warn!(position_id = %sib.id, "orphan_exit: sibling book-close failed: {e}");
-        }
-    }
-    Ok(())
+/// What the chain says about one wallet's bag of a mint, measured against every
+/// unsettled real row that bag should hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainBag {
+    /// No token of the mint in any of the wallet's accounts.
+    Cleared,
+    /// At least what the open rows still hold.
+    Held,
+    /// Some, but less than the open rows hold: part of it left outside the bot,
+    /// and which row's part is not decidable from the chain.
+    Short { held: u64, expected: u64 },
+    /// A row moved too recently for a `confirmed` read to have caught up with the
+    /// feed: a just-landed buy is not in it yet, so "less than expected" means
+    /// nothing. Read again later.
+    Unsettled,
+    /// The read failed — nothing is learned, nothing may be decided.
+    Unknown,
 }
 
-/// Reconcile Holding rows whose bag is already gone (PG `trades` net) — zero RPC.
+/// How long after a row's last write a `confirmed` chain read may judge it. The
+/// read trails the `processed` feed by a slot or two; this is that lag with room.
+const CHAIN_SETTLE: chrono::Duration = chrono::Duration::seconds(10);
+
+/// The verdict for `held` tokens in the wallet against `expected` still owed to
+/// open rows. `fresh` = a row was written within [`CHAIN_SETTLE`], which can only
+/// make the chain look short, never long: it voids a short or cleared verdict.
+pub fn classify_chain_bag(held: u64, expected: u64, fresh: bool) -> ChainBag {
+    if held >= expected && held > 0 {
+        ChainBag::Held
+    } else if fresh {
+        ChainBag::Unsettled
+    } else if held == 0 {
+        ChainBag::Cleared
+    } else {
+        ChainBag::Short { held, expected }
+    }
+}
+
+/// Read the wallet's bag of `mint` on chain (every token account, one
+/// `getTokenAccountsByOwner` at `confirmed`) and judge it against the open rows.
+pub async fn chain_bag(
+    repo: &StrategyRepo,
+    trader: &Arc<PumpFunTrader>,
+    wallet: &str,
+    mint: &str,
+) -> ChainBag {
+    let rows = match repo.find_unsettled_real_on_mint(wallet, mint, Uuid::nil()).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(mint = %mint, wallet = %wallet, "orphan_exit: open rows read failed: {e}");
+            return ChainBag::Unknown;
+        }
+    };
+    let accounts = match trader.get_all_token_accounts_for_mint(mint).await {
+        Ok(a) => a,
+        Err(e) => {
+            warn!(mint = %mint, wallet = %wallet, "orphan_exit: on-chain bag read failed: {e}");
+            return ChainBag::Unknown;
+        }
+    };
+    let held: u64 = accounts.iter().map(|(_, amount)| *amount).sum();
+    let expected: u64 = rows.iter().map(|p| p.remaining_token_amount()).sum();
+    let settled_before = Utc::now() - CHAIN_SETTLE;
+    let fresh = rows.iter().any(|p| p.updated_at > settled_before);
+    classify_chain_bag(held, expected, fresh)
+}
+
+/// When a `(wallet, mint)` the reaper found suspicious but not cleared may be read
+/// on chain again. A `trades` net that lies (a missed buy leg, a duplicated sell)
+/// keeps flagging the same bag every tick; one read per window is enough.
+const CHAIN_RECHECK: Duration = Duration::from_secs(600);
+static CHAIN_CHECKED: LazyLock<DashMap<(String, String), Instant>> = LazyLock::new(DashMap::new);
+
+/// [`chain_bag`], at most once per [`CHAIN_RECHECK`] for a bag already read and
+/// found not cleared. A throttled bag reads as `Unknown`.
+pub async fn chain_bag_throttled(
+    repo: &StrategyRepo,
+    trader: &Arc<PumpFunTrader>,
+    wallet: &str,
+    mint: &str,
+) -> ChainBag {
+    let key = (wallet.to_string(), mint.to_string());
+    if CHAIN_CHECKED.get(&key).is_some_and(|at| at.elapsed() < CHAIN_RECHECK) {
+        return ChainBag::Unknown;
+    }
+    let verdict = chain_bag(repo, trader, wallet, mint).await;
+    match verdict {
+        ChainBag::Held | ChainBag::Short { .. } | ChainBag::Unknown => {
+            CHAIN_CHECKED.insert(key, Instant::now());
+        }
+        ChainBag::Cleared | ChainBag::Unsettled => {
+            CHAIN_CHECKED.remove(&key);
+        }
+    }
+    CHAIN_CHECKED.retain(|_, at| at.elapsed() < CHAIN_RECHECK);
+    verdict
+}
+
+/// A row whose bag the chain cannot account for. It is not sold (that would take
+/// a sibling's tokens, or revert on an empty account) and not closed (no proof of
+/// what it was paid): a short bag parks `ExitStuck` for the operator, and a bag
+/// that cannot be read now is left exactly as it is for the next attempt.
+async fn park_unresolved(repo: &StrategyRepo, pg_id: Uuid, reason: &str, verdict: ChainBag) {
+    let ChainBag::Short { held, expected } = verdict else {
+        info!(position_id = %pg_id, ?verdict, "orphan_exit: on-chain bag not provable now — not selling");
+        return;
+    };
+    warn!(
+        position_id = %pg_id, held, expected,
+        "orphan_exit: the wallet holds less than its open rows — not selling; parked for manual resolution"
+    );
+    if let Ok(Some(mut pos)) = repo.find_position(pg_id).await {
+        if matches!(pos.status.as_str(), "Holding" | "ExitPending" | "ExitUnconfirmed") {
+            pos.mark_exit_stuck();
+            if pos.exit_reason.is_none() {
+                pos.exit_reason = Some(reason.to_string());
+            }
+            let _ = repo.update_position(&pos).await;
+        }
+    }
+    let _ = repo.set_exit_parked(pg_id, true).await;
+}
+
+/// Close every unsettled real row of `(wallet, mint)` once the chain shows the
+/// wallet holds none of it. Each row is paid by its own landed sells when it has
+/// any, else by the wallet's sell no position accounts for — or parked, never
+/// booked at zero. Rows whose exit is in flight in this process are left to it.
+/// Returns how many rows were booked.
+pub async fn close_cleared_bag(
+    deps: &OrphanExitDeps,
+    trader: &Arc<PumpFunTrader>,
+    wallet: &str,
+    mint: &str,
+) -> u32 {
+    let rows = match deps.strategy_repo.find_unsettled_real_on_mint(wallet, mint, Uuid::nil()).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(mint = %mint, "orphan_exit: open rows read failed: {e}");
+            return 0;
+        }
+    };
+    let mut closed = 0u32;
+    for pos in rows {
+        if deps.inflight.exit_held(pos.id) {
+            continue;
+        }
+        let fill = fill_from_latest_sell(&deps.strategy_repo, &deps.trade_repo, trader, wallet, &pos).await;
+        let booked = fill.is_some() || pos.remaining_token_amount() == 0;
+        match book_cleared_or_park(deps, &pos, fill).await {
+            Ok(()) if booked => closed += 1,
+            Ok(()) => {}
+            Err(e) => warn!(position_id = %pos.id, "orphan_exit: cleared-bag book failed: {e}"),
+        }
+    }
+    closed
+}
+
+/// Book `pos` closed when its bag is provably gone: by its own landed sells, or by
+/// the chain showing the wallet empty of the mint. `true` when it was booked. The
+/// reaper's heals call this for rows the `trades` net flags as cleared — that
+/// flag alone books nothing.
+pub async fn resolve_if_bag_gone(deps: &OrphanExitDeps, pos: &StrategyPosition) -> bool {
+    let (wallet, Some(trader)) = deps.wallets.for_position(&pos.wallet, &deps.trader) else {
+        return false;
+    };
+    if deps.inflight.exit_held(pos.id)
+        || deps.inflight.exit_mint_held(&super::exit_lock_key(&wallet, &pos.mint_address))
+    {
+        return false;
+    }
+    if let Some(fill) = landed_fill_of_own_sigs(&deps.trade_repo, &trader, &wallet, pos).await {
+        return book_externally_cleared(deps, pos, fill).await.is_ok();
+    }
+    match chain_bag_throttled(&deps.strategy_repo, &trader, &wallet, &pos.mint_address).await {
+        ChainBag::Cleared => close_cleared_bag(deps, &trader, &wallet, &pos.mint_address).await > 0,
+        _ => false,
+    }
+}
+
+/// Reconcile Holding rows whose bag may have left the wallet outside the bot (a
+/// manual sell elsewhere). The `trades` net only nominates candidates; each
+/// `(wallet, mint)` is closed only when the chain shows the wallet empty of it.
 pub async fn reconcile_externally_cleared_holdings(deps: &OrphanExitDeps) {
     let mints = match deps
         .strategy_repo
@@ -595,9 +777,6 @@ pub async fn reconcile_externally_cleared_holdings(deps: &OrphanExitDeps) {
             return;
         }
     };
-    if mints.is_empty() {
-        return;
-    }
     let mut closed = 0u32;
     for mint in mints {
         let positions = match deps.strategy_repo.find_open_by_mint(&mint, "real").await {
@@ -607,27 +786,29 @@ pub async fn reconcile_externally_cleared_holdings(deps: &OrphanExitDeps) {
                 continue;
             }
         };
-        for pos in positions {
-            // The mint was found cleared under SOME wallet. Each row is cleared
-            // only when the wallet that bought it holds none.
-            let (wallet, trader) = deps.wallets.for_position(&pos.wallet, &deps.trader);
-            // Its key is not loaded here: the heal below would decode the sell
-            // as another wallet's. Wait for the wallet.
-            let Some(trader) = trader else {
+        // One verdict per wallet holding a Holding row on the mint.
+        let mut wallets: Vec<String> = Vec::new();
+        for pos in positions.iter().filter(|p| p.status == "Holding") {
+            let wallet = deps.wallets.for_position(&pos.wallet, &deps.trader).0;
+            if !wallets.contains(&wallet) {
+                wallets.push(wallet);
+            }
+        }
+        for wallet in wallets {
+            // Its key is not loaded here: its token accounts cannot be read. Wait.
+            let Some(trader) = deps.wallets.for_position(&wallet, &deps.trader).1 else {
                 continue;
             };
-            let net = deps
-                .trade_repo
-                .net_token_amount_by_wallet_and_mint(&wallet, &mint)
-                .await
-                .unwrap_or(i64::MAX);
-            if net > BAG_CLEARED_THRESHOLD_RAW {
+            if deps.inflight.exit_mint_held(&super::exit_lock_key(&wallet, &mint)) {
                 continue;
             }
-            let fill = fill_from_latest_sell(&deps.trade_repo, &trader, &wallet, &pos).await;
-            match book_cleared_or_park(deps, &pos, fill).await {
-                Ok(()) => closed += 1,
-                Err(e) => warn!(position_id = %pos.id, "orphan_exit: cleared-Holding book failed: {e}"),
+            match chain_bag_throttled(&deps.strategy_repo, &trader, &wallet, &mint).await {
+                ChainBag::Cleared => closed += close_cleared_bag(deps, &trader, &wallet, &mint).await,
+                ChainBag::Short { held, expected } => warn!(
+                    mint = %mint, wallet = %wallet, held, expected,
+                    "orphan_exit: the wallet holds less of this mint than its open rows — left for the exit path"
+                ),
+                ChainBag::Held | ChainBag::Unsettled | ChainBag::Unknown => {}
             }
         }
     }
@@ -911,7 +1092,22 @@ pub fn adopt_buy_submitted_into_engine(
 
 #[cfg(test)]
 mod tests {
-    use super::{own_sells_cover_remainder, pro_rata_sol, unbooked_sell_sol};
+    use super::{classify_chain_bag, own_sells_cover_remainder, pro_rata_sol, unbooked_sell_sol, ChainBag};
+
+    /// The chain closes a bag only when it is empty and settled, and a sell only
+    /// goes out when the wallet holds every open row's bag.
+    #[test]
+    fn the_chain_verdict_never_closes_or_sells_on_doubt() {
+        assert_eq!(classify_chain_bag(100, 100, false), ChainBag::Held);
+        assert_eq!(classify_chain_bag(150, 100, true), ChainBag::Held, "a lagging read can only look short");
+        assert_eq!(classify_chain_bag(0, 100, false), ChainBag::Cleared);
+        assert_eq!(classify_chain_bag(40, 100, false), ChainBag::Short { held: 40, expected: 100 });
+        // A buy that just landed is not in a `confirmed` read yet: never cleared, never short.
+        assert_eq!(classify_chain_bag(0, 100, true), ChainBag::Unsettled);
+        assert_eq!(classify_chain_bag(40, 100, true), ChainBag::Unsettled);
+        // No open row and nothing held: cleared (a completed ladder), never held.
+        assert_eq!(classify_chain_bag(0, 0, false), ChainBag::Cleared);
+    }
 
     /// Bought 100, a scale-out leg sold 60 and is booked, the final sell of 40 reverted:
     /// the booked leg must not close the remaining 40.

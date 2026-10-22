@@ -295,7 +295,7 @@ pub async fn close_position(
     path: web::Path<(String, Uuid)>,
     query: web::Query<CloseParams>,
 ) -> impl Responder {
-    use crate::strategies::engine::orphan_exit::{self, OrphanStart, BAG_CLEARED_THRESHOLD_RAW};
+    use crate::strategies::engine::orphan_exit::{self, OrphanStart};
 
     let (_strategy, position_id) = path.into_inner();
     let action = query.action.as_deref().unwrap_or("retry");
@@ -434,35 +434,10 @@ pub async fn close_position(
                 }));
             }
 
-            // Bag already gone (Trade sell / sibling) — book closed, no sell RPC.
-            // Read under the wallet that bought it: another wallet's net is not this bag.
-            let (wallet, Some(trader)) = app_state.wallets.for_position(&pos.wallet, &app_state.trader)
-            else {
+            // Only the wallet that bought the bag can sell it.
+            if app_state.wallets.for_position(&pos.wallet, &app_state.trader).1.is_none() {
                 return wallet_not_loaded(&pos.wallet);
-            };
-            if let Ok(net) = app_state
-                .trade_repo()
-                .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)
-                .await
-            {
-                if net <= BAG_CLEARED_THRESHOLD_RAW {
-                    let fill = orphan_exit::fill_from_latest_sell(
-                        &app_state.trade_repo(),
-                        &trader,
-                        &wallet,
-                        &pos,
-                    )
-                    .await;
-                    let deps = orphan_deps_from_state(&app_state);
-                    return match orphan_exit::book_cleared_or_park(&deps, &pos, fill).await {
-                        Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "closed": true })),
-                        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
-                            "error": format!("Failed to book cleared position: {e}")
-                        })),
-                    };
-                }
             }
-
             // Orphan / stuck / unconfirmed retry — direct sell (feed confirm), never
             // silent 202. A re-sell of ExitUnconfirmed is safe: if the original sell
             // landed, this one finds nothing to sell and the row books cleared.
@@ -499,15 +474,15 @@ fn wallet_not_loaded(wallet: &str) -> HttpResponse {
 
 /// `?action=verify` — resolve a row on demand without selling.
 ///
-/// - `ExitUnconfirmed`: PG-net check — bag gone ⇒ heal to `End` (the sell DID
-///   land); bag present ⇒ report "still held" so the operator can Re-sell / Dump /
-///   Write off.
+/// - `ExitUnconfirmed`: the row's own landed sells close it; else the chain
+///   decides — wallet empty of the mint ⇒ heal to `End` (the sell DID land); bag
+///   present ⇒ report "still held" so the operator can Re-sell / Dump / Write off.
 /// - `BuySubmitted`: the reaper's adopt-or-drop logic, one shot (B3 resolve).
 async fn verify_position(
     app_state: &web::Data<Arc<DeployState>>,
     pos: StrategyPosition,
 ) -> HttpResponse {
-    use crate::strategies::engine::orphan_exit::{self, BAG_CLEARED_THRESHOLD_RAW};
+    use crate::strategies::engine::orphan_exit::{self, ChainBag};
     use crate::strategies::engine::reapers::{self, BuyResolution};
 
     match pos.status.as_str() {
@@ -516,49 +491,48 @@ async fn verify_position(
             else {
                 return wallet_not_loaded(&pos.wallet);
             };
-            let net = match app_state
-                .trade_repo()
-                .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)
-                .await
+            let deps = orphan_deps_from_state(app_state);
+            if let Some(fill) =
+                orphan_exit::landed_fill_of_own_sigs(&app_state.trade_repo(), &trader, &wallet, &pos).await
             {
-                Ok(n) => n,
-                Err(e) => {
-                    return HttpResponse::InternalServerError()
-                        .json(serde_json::json!({"error": format!("net check failed: {e}")}));
-                }
-            };
-            if net <= BAG_CLEARED_THRESHOLD_RAW {
-                let fill = orphan_exit::fill_from_latest_sell(
-                    &app_state.trade_repo(),
-                    &trader,
-                    &wallet,
-                    &pos,
-                )
-                .await;
-                // Proceeds unresolvable ⇒ `book_cleared_or_park` parks instead of
-                // closing. Say so rather than reporting a close that didn't happen.
-                let booked = fill.is_some() || pos.remaining_token_amount() == 0;
-                let deps = orphan_deps_from_state(app_state);
-                match orphan_exit::book_cleared_or_park(&deps, &pos, fill).await {
-                    Ok(()) if booked => HttpResponse::Ok()
-                        .json(serde_json::json!({ "verified": true, "cleared": true })),
-                    Ok(()) => HttpResponse::Ok().json(serde_json::json!({
-                        "verified": true,
-                        "cleared": false,
-                        "parked": true,
-                        "error": "bag is gone but no sell leg could be resolved — parked for \
-                                  manual resolution rather than booked at zero proceeds",
-                    })),
+                return match orphan_exit::book_externally_cleared(&deps, &pos, fill).await {
+                    Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "verified": true, "cleared": true })),
                     Err(e) => HttpResponse::InternalServerError()
                         .json(serde_json::json!({"error": format!("heal failed: {e}")})),
+                };
+            }
+            match orphan_exit::chain_bag(&app_state.strategy_repo, &trader, &wallet, &pos.mint_address).await {
+                ChainBag::Cleared => {
+                    // Proceeds unresolvable ⇒ the row parks instead of closing. Say so
+                    // rather than reporting a close that didn't happen.
+                    if orphan_exit::close_cleared_bag(&deps, &trader, &wallet, &pos.mint_address).await > 0 {
+                        HttpResponse::Ok().json(serde_json::json!({ "verified": true, "cleared": true }))
+                    } else {
+                        HttpResponse::Ok().json(serde_json::json!({
+                            "verified": true,
+                            "cleared": false,
+                            "parked": true,
+                            "error": "bag is gone but no sell leg could be resolved — parked for \
+                                      manual resolution rather than booked at zero proceeds",
+                        }))
+                    }
                 }
-            } else {
-                HttpResponse::Ok().json(serde_json::json!({
+                ChainBag::Held => HttpResponse::Ok().json(serde_json::json!({
                     "verified": true,
                     "cleared": false,
                     "still_held": true,
-                    "net_token_amount": net,
-                }))
+                })),
+                ChainBag::Short { held, expected } => HttpResponse::Ok().json(serde_json::json!({
+                    "verified": true,
+                    "cleared": false,
+                    "still_held": true,
+                    "held_token_amount": held,
+                    "expected_token_amount": expected,
+                    "error": "the wallet holds less of this mint than its open positions",
+                })),
+                ChainBag::Unsettled | ChainBag::Unknown => HttpResponse::ServiceUnavailable().json(
+                    serde_json::json!({"error": "on-chain bag read not conclusive yet — retry in a few seconds"}),
+                ),
             }
         }
         "BuySubmitted" => {
@@ -753,7 +727,7 @@ pub async fn set_manual_exit(
     HttpResponse::Ok().json(serde_json::json!({ "updated": true, "manual_exit": json }))
 }
 
-fn orphan_deps_from_state(
+pub(crate) fn orphan_deps_from_state(
     app_state: &DeployState,
 ) -> crate::strategies::engine::orphan_exit::OrphanExitDeps {
     use crate::strategies::engine::orphan_exit::OrphanExitDeps;

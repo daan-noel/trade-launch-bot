@@ -990,6 +990,10 @@ impl Sink {
         let Some(fill) = delta.fill else {
             return false;
         };
+        // Every terminal close frees the buy's SOL earmark, whichever path closed
+        // it (a sell, an outside clear, a write-off). Usually already released at
+        // the fill or the sell start; idempotent.
+        self.release_sol(meta.pg_id);
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
         let reason = delta
             .reason

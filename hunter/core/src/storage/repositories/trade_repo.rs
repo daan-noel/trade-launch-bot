@@ -234,6 +234,13 @@ impl TryFrom<TradeDbRow> for Trade {
     }
 }
 
+/// A `timestamptz` SQL literal for an instant, microsecond-exact, so a statement can
+/// carry its window bound in the text and have chunk exclusion happen at plan time.
+/// Built from a `DateTime`, never from caller text, so nothing is injectable.
+fn timestamptz_literal(t: DateTime<Utc>) -> String {
+    format!("'{}'::timestamptz", t.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+}
+
 fn trade_type_str(t: TradeType) -> &'static str {
     match t {
         TradeType::Buy => "buy",
@@ -738,6 +745,71 @@ impl TradeRepo {
         .await?;
 
         row.map(Trade::try_from).transpose()
+    }
+
+    /// The wallet's newest sell on `mint` whose signature is not in `claimed` —
+    /// the sell that cleared a bag outside the bot, never one a position already
+    /// booked (crediting that one again pays a row proceeds it never received).
+    pub async fn find_latest_unclaimed_sell(
+        &self,
+        wallet: &str,
+        mint: &str,
+        claimed: &[String],
+    ) -> anyhow::Result<Option<Trade>> {
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone())
+            .id_for(wallet)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let claimed: Vec<Vec<u8>> = claimed.iter().filter_map(|s| sig_base58_to_bytes(s).ok()).collect();
+        let row = sqlx::query_as::<_, TradeDbRow>(
+            r#"
+            SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
+                   t.amount_lamports, t.token_amount,
+                   t.reserve_lamports, t.reserve_token,
+                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
+            FROM trades t
+            LEFT JOIN wallet_dict w ON w.id = t.wallet_id
+            WHERE t.wallet_id = $1 AND t.mint_address = $2 AND t.trade_type = 'sell'
+              AND NOT (t.tx_signature = ANY($3))
+            ORDER BY t.slot DESC, t.tx_index DESC, t.leg_index DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(wallet_id)
+        .bind(mint)
+        .bind(&claimed)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(Trade::try_from).transpose()
+    }
+
+    /// The subset of `signatures` that already has at least one leg on `mint` in
+    /// `trades` since `since`. A heal fetches and inserts only the rest: the feed
+    /// stamps its own receive time on a leg, so a healed copy of a leg already
+    /// present gets another `block_time` and the primary key cannot dedup it.
+    pub async fn signatures_with_legs(
+        &self,
+        mint: &str,
+        signatures: &[String],
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<HashSet<String>> {
+        if signatures.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let sig_bytes: Vec<Vec<u8>> = signatures.iter().filter_map(|s| sig_base58_to_bytes(s).ok()).collect();
+        let rows: Vec<(Vec<u8>,)> = sqlx::query_as(
+            "SELECT DISTINCT tx_signature FROM trades \
+             WHERE mint_address = $1 AND block_time >= $2 AND tx_signature = ANY($3)",
+        )
+        .bind(mint)
+        .bind(since)
+        .bind(&sig_bytes)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(b,)| sig_bytes_to_base58(&b)).collect())
     }
 
     /// Last trade on `mint` inside `[since, until]`, any wallet — the token's
@@ -1531,6 +1603,13 @@ impl TradeRepo {
     /// segment column (`mint_address`) and the leading order column (`slot`)
     /// narrow it to the batches holding those legs. Each statement commits on
     /// its own; a retry re-finds whatever is left.
+    ///
+    /// The window bounds are SQL literals, not binds: a bound `block_time` can be
+    /// planned generically, which excludes no chunk until execution, and a DML on a
+    /// hypertable then runs the decompression filter in EVERY compressed chunk -
+    /// ~9 minutes and ~2.5 GB of rewritten heap per chunk on the live box, all of
+    /// it holding a lock that stalls the compression policy. A literal bound is
+    /// excluded at plan time, so only the chunks the window touches are opened.
     pub async fn delete_slots_between(
         &self,
         from: DateTime<Utc>,
@@ -1552,21 +1631,18 @@ impl TradeRepo {
         .bind(slots)
         .fetch_all(&self.pool)
         .await?;
+        let delete_sql = format!(
+            "DELETE FROM trades              WHERE block_time >= {} AND block_time < {}                AND mint_address = $1 AND slot = $2",
+            timestamptz_literal(from),
+            timestamptz_literal(to),
+        );
         let mut deleted = 0u64;
         for (mint, slot) in pairs {
-            let done = sqlx::query(
-                r#"
-                DELETE FROM trades
-                WHERE block_time >= $1 AND block_time < $2
-                  AND mint_address = $3 AND slot = $4
-                "#,
-            )
-            .bind(from)
-            .bind(to)
-            .bind(&mint)
-            .bind(slot)
-            .execute(&self.pool)
-            .await?;
+            let done = sqlx::query(&delete_sql)
+                .bind(&mint)
+                .bind(slot)
+                .execute(&self.pool)
+                .await?;
             deleted += done.rows_affected();
         }
         Ok(deleted)
@@ -2434,6 +2510,13 @@ pub fn sig_bytes_to_base58(bytes: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timestamptz_literal_is_microsecond_exact_utc() {
+        use chrono::TimeZone;
+        let t = chrono::Utc.timestamp_micros(1_792_602_117_772_786).unwrap();
+        assert_eq!(super::timestamptz_literal(t), "'2026-10-21T17:01:57.772786Z'::timestamptz");
+    }
+
     use super::*;
     use sqlx::postgres::PgPoolOptions;
 

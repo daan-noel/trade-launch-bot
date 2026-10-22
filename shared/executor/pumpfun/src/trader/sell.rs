@@ -418,15 +418,23 @@ impl PumpFunTrader {
             info!("🔁 Sell — token: {}", token_mint);
 
             let res: Result<Option<String>> = async {
-                let sig = self.send_transaction(&tx).await?;
-
                 // A durable-nonce sell that doesn't land stays executable until its
-                // nonce advances, so "just resend" is unsafe. Record the anchor here
-                // and the recovery path can PROVE this sell is dead (or make it dead)
-                // before sending another — see `Engine::burn_nonce_tx`.
+                // nonce advances, so "just resend" is unsafe. Record the anchor and
+                // the signature BEFORE the send: a send that errors or times out may
+                // still have reached the network, and the caller must be able to
+                // PROVE this sell dead (or make it dead) before sending another —
+                // see `Engine::burn_nonce_tx` / `Engine::take_signed_sell`.
+                let signed = tx
+                    .signatures
+                    .first()
+                    .map(|s| s.to_string())
+                    .context("signed sell tx has no signature")?;
                 if let Some(nonce_pubkey) = nonce_to_refresh {
-                    self.note_nonce_tx(&sig, nonce_pubkey, tx.message.recent_blockhash);
+                    self.note_nonce_tx(&signed, nonce_pubkey, tx.message.recent_blockhash);
                 }
+                self.note_signed_sell(token_mint, &signed);
+                let sig = self.send_transaction(&tx).await?;
+                self.clear_signed_sell(token_mint, &signed);
 
                 info!(
                     "📤 Sell sent — sig: {} | amount: {} | {}ms",

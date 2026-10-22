@@ -3592,44 +3592,29 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
-    /// Real `ExitStuck` rows whose wallet still shows a positive `trades` net on
-    /// the mint (bag stranded). PG-only — no RPC. `threshold_raw` is the cleared
-    /// floor (typically 0).
-    pub async fn find_exit_stuck_bags(
-        &self,
-        threshold_raw: i64,
-    ) -> anyhow::Result<Vec<StrategyPosition>> {
-        self.find_bags_by_status("ExitStuck", threshold_raw).await
+    /// Real `ExitStuck` rows with a remaining bag — see [`Self::find_bags_by_status`].
+    pub async fn find_exit_stuck_bags(&self) -> anyhow::Result<Vec<StrategyPosition>> {
+        self.find_bags_by_status("ExitStuck").await
     }
 
-    /// Real, un-parked rows in `status` whose wallet still shows a positive
-    /// `trades` net on the mint — i.e. the bag is still held. PG-only, no RPC.
+    /// Real, un-parked rows in `status` with a remaining bag — the redrive
+    /// candidates. Whether the bag is really still in the wallet is NOT read from
+    /// the `trades` net here (a missed, lagging or duplicated leg makes it lie
+    /// both ways): the orphan sell proves it on chain before it sends anything.
     ///
     /// The ONE stranded-bag query: `ExitStuck` and `ExitUnconfirmed` both need it
     /// and their "is there still a bag" definition must not drift apart.
-    pub async fn find_bags_by_status(
-        &self,
-        status: &str,
-        threshold_raw: i64,
-    ) -> anyhow::Result<Vec<StrategyPosition>> {
+    pub async fn find_bags_by_status(&self, status: &str) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             r#"
             SELECT {POSITION_COLS_P}
             FROM strategy_positions p
-            JOIN wallet_dict w ON w.address = p.wallet
-            WHERE p.mode = 'real' AND p.status = $2 AND p.entry_price IS NOT NULL
+            WHERE p.mode = 'real' AND p.status = $1 AND p.entry_price IS NOT NULL
               AND NOT p.exit_parked
-              AND COALESCE((
-                    SELECT SUM(CASE WHEN t.trade_type = 'buy'  THEN t.token_amount
-                                    WHEN t.trade_type = 'sell' THEN -t.token_amount
-                                    ELSE 0 END)
-                    FROM trades t
-                    WHERE t.wallet_id = w.id AND t.mint_address = p.mint_address
-                  ), 0)::bigint > $1
+              AND COALESCE(p.entry_token_amount, 0) > p.sold_token_amount
             ORDER BY p.updated_at ASC
             "#
         ))
-        .bind(threshold_raw)
         .bind(status)
         .fetch_all(&self.pool)
         .await?;
@@ -3871,6 +3856,20 @@ impl StrategyRepo {
         .fetch_one(&self.pool)
         .await?;
         Ok(exists)
+    }
+
+    /// Every sell signature a real position on `(wallet, mint)` has booked or sent:
+    /// its ledger's sell legs and its submitted exit signatures. A sell outside this
+    /// set is one no position accounts for — an outside clear of the bag.
+    pub async fn claimed_sell_signatures(&self, wallet: &str, mint: &str) -> anyhow::Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT f.tx_signature FROM position_fills f              JOIN strategy_positions p ON p.id = f.position_id              WHERE p.wallet = $1 AND p.mint_address = $2 AND p.mode = 'real'                AND f.side = 'sell' AND f.tx_signature IS NOT NULL AND f.tx_signature <> ''              UNION              SELECT jsonb_array_elements_text(exit_tx_signatures) FROM strategy_positions              WHERE wallet = $1 AND mint_address = $2 AND mode = 'real'",
+        )
+        .bind(wallet)
+        .bind(mint)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(s,)| s).collect())
     }
 
     /// True if any OTHER position (excluding `exclude_id`) on this `(wallet, mint)` in

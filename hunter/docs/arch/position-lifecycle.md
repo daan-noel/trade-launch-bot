@@ -77,16 +77,25 @@ Engine (`hunter/engine/src/reduce.rs`), unchanged shape except the split:
   twice more within microseconds, three PG writes deep, against a wall that cannot
   have moved. `Reverted` is reserved for a buy that reached the chain and provably
   did not fill.
+- **The balance floor reserves as it checks** (`Engine::try_reserve_buy`, one lock):
+  buys decided in the same instant on one wallet each see the SOL the others took. The
+  earmark holds a buy's SOL only while the cached wallet balance does not show it
+  spent: in flight it holds; on the fill it is settled at the fill's slot and dropped
+  by the first balance reading that includes it (a push at or after that slot, or a
+  `confirmed` poll taken 5 s after). A landed position therefore never holds SOL back
+  twice, and a closed one never holds it at all. Every terminal close releases it as
+  well. `max_committed_sol` counts the open positions from the registry
+  (`open_exposure_lamports`), not the earmarks.
 
 Reaper (`reapers.rs`, boot + 60 s):
 | Sweep | Behavior |
 |---|---|
 | `resolve_buy_submitted` (shared with Verify) | adopt indexed fill → Holding; drop only when EVERY sig confirmed-reverted; else wait. Past review window → `needs_review` SSE flag |
-| `heal_exit_pending_cleared` | ExitPending net ≤ dust (+ sell on record) → book End (runs BEFORE redrive) |
+| `heal_exit_pending_cleared` | ExitPending the `trades` net flags cleared → `resolve_if_bag_gone`: own landed sells, else the chain (§2.1b) → book End (runs BEFORE redrive) |
 | *(all "bag gone → book End" sweeps)* | price the leg from the feed, **healing it from the row's exit sigs first**; unresolvable → park, never a zero-proceeds close (§2.1b) |
 | `redrive_orphaned_exit_pending` | nudge engine / orphan sell |
-| `redrive_exit_stuck` | ExitStuck-with-bag (`find_bags_by_status`, excl. parked) → orphan sell + backoff; at cap → `park_or_recover` |
-| `heal_cleared_by_status("ExitStuck"/"ExitUnconfirmed")` | bag gone → book End (the ExitUnconfirmed heal that never existed pre-split) |
+| `redrive_exit_stuck` | ExitStuck with a remainder (`find_bags_by_status`, excl. parked) → orphan sell + backoff; at cap → `park_or_recover` |
+| `heal_cleared_by_status("ExitStuck"/"ExitUnconfirmed")` | flagged cleared by the net → `resolve_if_bag_gone` → book End |
 | `redrive_exit_unconfirmed` | ExitUnconfirmed-with-bag → **only if every recorded sell sig is provably dead** (`burn_nonce_tx`) → orphan sell; else left for manual Verify. Runs AFTER its heal |
 | `mark_stale_exit_pending_stuck` | real ExitPending >300 s: bag-check first — heal-eligible rows are left to the heal; the rest flip `ExitStuck` (never a blind terminal stamp) |
 | `close_stale_paper_exit_pending` | paper crash artifact → book End at entry (breakeven) |
@@ -101,17 +110,31 @@ has already been shown to be wrong: an empty wallet with no sell row means the s
 landed and the feed missed it. Asking it for the proceeds anyway returns nothing, and a
 zero-proceeds `End` is a permanent −100% stamped on a position that may have won.
 
-Three rules close that:
+Four rules close that:
+
+- **A bag is gone only when the chain says so.** The `trades` net is a free pre-filter
+  that nominates candidates and decides nothing: a leg still in the writer's batch, one
+  the feed missed, or a healed duplicate makes it lie both ways. `orphan_exit::chain_bag`
+  reads every token account of the wallet for the mint (one `getTokenAccountsByOwner` at
+  `confirmed`) against what the open rows still hold: empty ⇒ `Cleared`, at least what
+  they hold ⇒ `Held`, in between ⇒ `Short` (park, never guess which row), a row written
+  within 10 s ⇒ `Unsettled` (the read trails the feed, so a fresh buy can look absent),
+  a failed read ⇒ `Unknown` (decide nothing). Reaper reads are throttled to one per
+  `(wallet, mint)` per 10 min (`chain_bag_throttled`). A bot sell only ever sells its
+  own amount, so one row's sell never closes a sibling.
 
 - **A row is paid by its own sells.** A row with recorded `exit_tx_signatures` is closed
   only from those signatures (`landed_fill_of_own_sigs`); none landed ⇒ park. The wallet's
   latest sell on the mint can belong to a sibling position (same wallet, same mint), and
   booking it credits this row with proceeds it never received. A row with no signatures
-  (an operator or external clear) takes the wallet's latest sell.
+  (an operator or external clear) takes the wallet's latest sell that no position has
+  booked or sent (`claimed_sell_signatures`).
 - **Heal the feed, don't price around it.** `landed_fill_of_own_sigs` re-fetches the
   row's own `exit_tx_signatures` (`sell_backfill::heal_missing_sell_legs`: one batched
-  `getTransaction` → `rpc_to_protobuf` → the ONE ingest decoder → `trades`). Repairing
-  `trades` fixes the bag net, the sibling close and the token's chart in the same write,
+  `getTransaction` → `rpc_to_protobuf` → the ONE ingest decoder → `trades`), only for
+  signatures with no leg yet, stamped with the chain's `blockTime`: a heal never fetches
+  or writes a leg twice. Repairing `trades` fixes the bag net and the token's chart in
+  the same write,
   and keeps the healed fill on the same `user_quote_amount_out` convention as every
   feed-confirmed one. `exec_real`'s extended-poll timeout does the same before giving up,
   but only when the RPC says the signature **succeeded**.
@@ -158,7 +181,7 @@ its own entry price are worth far more than `entry_sol`) is valued scale-free fr
 
 Every path that closes a **real** row books what the wallet moved, never
 `price × tokens`: the engine sink and the orphan sell through `record_sell_fill` with the
-sell's own signatures, and the heal, sibling and manual-sell reconciles through
+sell's own signatures, and the heal and manual-sell reconciles through
 `orphan_exit::wallet_fill_from_sell` - the clearing sell's `payer_net_lamports`
 (`SigLegs::wallet_received_sol`, negative when a dust sell's fees beat its proceeds),
 shared pro-rata by tokens when one sell cleared several rows.
@@ -230,8 +253,10 @@ dead. The single-endpoint send is bounded by `FANOUT_SEND_TIMEOUT`.
 **Stop / Stop All skip a real buy that is sent and unfilled** (`real_buy_in_flight`): failing
 the arm would orphan the tokens when the buy lands.
 
-**The SOL earmark is rebuilt** at boot from the adopted real `Holding` rows and carried
-across `WalletRuntime::rebuild`.
+**No SOL earmark is rebuilt at boot**: an adopted `Holding` row's buy already left the
+wallet balance. In-flight earmarks are carried across `WalletRuntime::rebuild`, and
+`exec_real` releases and settles through every trader, so a task holding the replaced
+trader still frees the new one.
 
 Three further invariants:
 
@@ -243,7 +268,16 @@ nonce_tx_state, burn_nonce_tx}` (executor-core `nonce.rs`) make this decidable: 
 `signature → (nonce_account, hash)` index proves a tx is dead once the nonce moves
 past its hash, and `burn_nonce_tx` advances the nonce to *make* it dead. `Unknown`
 (untracked / aged out across a restart) is never treated as dead — those rows still
-go to manual Verify.
+go to manual Verify. The sell paths record the signature and its nonce anchor
+**before** the send (`note_signed_sell`): a send that errors or times out can still
+have reached the network, so `run_exit` takes that signature as sent, and re-sends
+only after `burn_nonce_tx` proves it dead and the chain has not seen it. The orphan
+sell (reaper redrive, Console retry) proves every earlier sell signature of the row
+dead, or landed and reverted, before it sends (`prior_sells_dead`).
+
+**A confirmed fill is audited into `trades`.** Fills confirm from the in-memory feed
+before the batch writer persists them; 30 s later `audit_persisted` checks the legs are
+in `trades`, heals a missing sell leg from its signature and reports a missing buy.
 
 **6005 `BondingCurveComplete` is proof of migration, not a hint.** The exit loop
 latches the AMM route on it and retries with zero RPC (the pool is a pure PDA

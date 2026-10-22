@@ -263,10 +263,17 @@ impl PumpFunTrader {
                     nonce_hash,
                     self.config.signer.as_ref(),
                 )?;
-                let sig = self.send_transaction(&tx).await?;
-                // Anchor record for the recovery path — see the note in
+                // Anchor and signature recorded BEFORE the send — see the note in
                 // `sell.rs::execute_sell` and `Engine::burn_nonce_tx`.
-                self.note_nonce_tx(&sig, nonce_pubkey, nonce_hash);
+                let signed = tx
+                    .signatures
+                    .first()
+                    .map(|s| s.to_string())
+                    .context("signed AMM sell tx has no signature")?;
+                self.note_nonce_tx(&signed, nonce_pubkey, nonce_hash);
+                self.note_signed_sell(token_mint, &signed);
+                let sig = self.send_transaction(&tx).await?;
+                self.clear_signed_sell(token_mint, &signed);
                 info!(
                     "📤 AMM sell sent — sig: {} | amount: {} | {}ms",
                     sig,

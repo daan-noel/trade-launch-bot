@@ -3,9 +3,12 @@
 //! - `BuySubmitted` with no live entry task → adopt / wait / drop (never re-send);
 //!   unresolved past the review window → `needs_review` SSE flag (manual Verify)
 //! - `ExitPending` with no live exit task → re-drive sell (or nudge the engine)
-//! - externally-cleared `Holding` (bag gone via Trade sell) → book End (PG `trades` net)
-//! - `ExitStuck` with remaining bag (PG net) → re-drive sell with backoff, then park
-//! - `ExitStuck` / `ExitUnconfirmed` whose bag is gone → heal to End
+//! - externally-cleared `Holding` (bag gone outside the bot) → book End once the
+//!   chain shows the wallet empty of the mint (`trades` net only nominates)
+//! - `ExitStuck` with remaining bag → re-drive sell with backoff, then park (the
+//!   orphan sell proves the bag on chain before it sends)
+//! - `ExitStuck` / `ExitUnconfirmed` whose bag is gone (own landed sell, or the
+//!   chain) → heal to End
 //! - stale `ExitPending` → bag-check first: cleared heals to End, a held bag
 //!   flips to `ExitStuck` (open, attention) — never a blind terminal stamp
 //! - **paper** `ExitStuck` → book End at the last known price (no bag to redrive;
@@ -14,8 +17,10 @@
 //! Fires once at boot (immediate tick) then every 60 s. Skips rows whose
 //! [`InFlightGuards`] slot is held so it never races a live buy/sell task.
 //!
-//! Helius: no periodic account/balance RPC. Cleared/stranded detection is Postgres
-//! `trades` net only; sell confirm stays feed-first inside `run_exit`.
+//! Helius: the `trades` net nominates candidates for free; a candidate costs one
+//! `getTokenAccountsByOwner` (throttled per `(wallet, mint)`, see
+//! `orphan_exit::chain_bag_throttled`) before anything is booked or sold. Sell
+//! confirm stays feed-first inside `run_exit`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -238,6 +243,9 @@ async fn resolve_buy_submitted_inner(
             if legs.token_amount == 0 {
                 continue;
             }
+            // The buy landed: its SOL is out of the balance, so its earmark ends
+            // with the first reading that shows it.
+            deps.wallets.settle_commitment(&position.id.to_string(), legs.last_slot);
             let token_account = position
                 .token_account
                 .clone()
@@ -487,9 +495,7 @@ async fn drop_buy_submitted(
 ) -> BuyResolution {
     match deps.strategy_repo.delete_position(position.id).await {
         Ok(()) => {
-            if let Some(trader) = deps.wallet_and_trader(position).1 {
-                trader.release_sol_for_position(&position.id.to_string());
-            }
+            deps.wallets.release_commitment(&position.id.to_string());
             info!(
                 position_id = %position.id,
                 mint = %position.mint_address,
@@ -646,9 +652,10 @@ async fn redrive_orphaned_exit_pending(deps: &ReaperDeps) {
     }
 }
 
-/// ExitPending rows whose PG net is already ≤ dust → book End (no sell, no RPC).
-/// The in-flight sell that set `ExitPending` already cleared the bag; without this
-/// the ExitPending re-drive would send a second sell that reverts for no tokens.
+/// ExitPending rows the `trades` net flags as cleared → book End once the bag is
+/// provably gone (the row's own landed sell, or the chain). The in-flight sell that
+/// set `ExitPending` may already have cleared the bag; without this the ExitPending
+/// re-drive would send a second sell into it.
 async fn heal_exit_pending_cleared(deps: &ReaperDeps) {
     let cleared = match deps
         .strategy_repo
@@ -667,17 +674,9 @@ async fn heal_exit_pending_cleared(deps: &ReaperDeps) {
     let orphan = deps.orphan_deps();
     let mut n = 0u32;
     for pos in cleared {
-        // Skip a position whose exit is actively in flight in THIS process — its
-        // own confirm loop will book the close; don't race a book-close under it.
-        if deps.inflight.exit_held(pos.id) || deps.inflight.exit_mint_held(&super::exit_lock_key(&pos.wallet, &pos.mint_address)) {
-            continue;
-        }
-        let (wallet, Some(trader)) = deps.wallet_and_trader(&pos) else {
-            continue;
-        };
-        let fill =
-            orphan_exit::fill_from_latest_sell(&deps.trade_repo, &trader, &wallet, &pos).await;
-        if orphan_exit::book_cleared_or_park(&orphan, &pos, fill).await.is_ok() {
+        // Skips a row whose exit is in flight in THIS process — its own confirm
+        // loop books the close.
+        if orphan_exit::resolve_if_bag_gone(&orphan, &pos).await {
             n += 1;
         }
     }
@@ -686,11 +685,11 @@ async fn heal_exit_pending_cleared(deps: &ReaperDeps) {
     }
 }
 
-/// Re-drive real `ExitStuck` rows that still have a bag (PG net > dust).
+/// Re-drive real `ExitStuck` rows that still have a bag.
 async fn redrive_exit_stuck(deps: &ReaperDeps, backoff: &mut HashMap<Uuid, u8>) {
     let stuck = match deps
         .strategy_repo
-        .find_exit_stuck_bags(BAG_CLEARED_THRESHOLD_RAW)
+        .find_exit_stuck_bags()
         .await
     {
         Ok(p) => p,
@@ -731,6 +730,7 @@ async fn redrive_exit_stuck(deps: &ReaperDeps, backoff: &mut HashMap<Uuid, u8>) 
                     continue;
                 };
                 let fill = orphan_exit::fill_from_latest_sell(
+                    &deps.strategy_repo,
                     &deps.trade_repo,
                     &trader,
                     &wallet,
@@ -830,18 +830,11 @@ async fn park_or_recover(deps: &ReaperDeps, position: &StrategyPosition, status:
     }
     match reconcile_bag_onchain(deps, position).await {
         OnChainBag::Cleared => {
-            let orphan = deps.orphan_deps();
-            let (wallet, Some(trader)) = deps.wallet_and_trader(position) else {
-                return;
-            };
-            // `fill_from_latest_sell` heals the feed from this row's exit
-            // signatures before it answers. The bag being gone is the proof
-            // that a sell landed, so "PG has no sell leg" here means the feed
-            // missed it, not that we were paid nothing.
-            let fill =
-                orphan_exit::fill_from_latest_sell(&deps.trade_repo, &trader, &wallet, position)
-                    .await;
-            let _ = orphan_exit::book_cleared_or_park(&orphan, position, fill).await;
+            // The bag being gone is the proof that a sell landed, so "PG has no
+            // sell leg" means the feed missed it, not that we were paid nothing:
+            // `resolve_if_bag_gone` heals the row's own sells first, then books
+            // the wallet's empty bag against every open row on it.
+            let _ = orphan_exit::resolve_if_bag_gone(&deps.orphan_deps(), position).await;
         }
         OnChainBag::Repointed => {
             // The redrives so far were aimed at the wrong account, so they are not
@@ -884,7 +877,7 @@ async fn park_or_recover(deps: &ReaperDeps, position: &StrategyPosition, status:
 async fn redrive_exit_unconfirmed(deps: &ReaperDeps, backoff: &mut HashMap<Uuid, u8>) {
     let stranded = match deps
         .strategy_repo
-        .find_bags_by_status("ExitUnconfirmed", BAG_CLEARED_THRESHOLD_RAW)
+        .find_bags_by_status("ExitUnconfirmed")
         .await
     {
         Ok(p) => p,
@@ -949,6 +942,7 @@ async fn redrive_exit_unconfirmed(deps: &ReaperDeps, backoff: &mut HashMap<Uuid,
                     continue;
                 };
                 let fill = orphan_exit::fill_from_latest_sell(
+                    &deps.strategy_repo,
                     &deps.trade_repo,
                     &trader,
                     &wallet,
@@ -961,9 +955,10 @@ async fn redrive_exit_unconfirmed(deps: &ReaperDeps, backoff: &mut HashMap<Uuid,
     }
 }
 
-/// Rows in `status` (`ExitStuck` / `ExitUnconfirmed`) whose PG net is already
-/// ≤ dust → book End (no sell, no RPC). For `ExitUnconfirmed` this is the heal
-/// that never existed (S3): the sell DID land, the feed just confirmed late.
+/// Rows in `status` (`ExitStuck` / `ExitUnconfirmed`) the `trades` net flags as
+/// cleared → book End once the bag is provably gone (own landed sell, or the
+/// chain). For `ExitUnconfirmed` this is the case of a sell that DID land and a
+/// feed that confirmed it late.
 async fn heal_cleared_by_status(deps: &ReaperDeps, status: &str) {
     let cleared = match deps
         .strategy_repo
@@ -982,15 +977,7 @@ async fn heal_cleared_by_status(deps: &ReaperDeps, status: &str) {
     let orphan = deps.orphan_deps();
     let mut n = 0u32;
     for pos in cleared {
-        if deps.inflight.exit_held(pos.id) || deps.inflight.exit_mint_held(&super::exit_lock_key(&pos.wallet, &pos.mint_address)) {
-            continue;
-        }
-        let (wallet, Some(trader)) = deps.wallet_and_trader(&pos) else {
-            continue;
-        };
-        let fill =
-            orphan_exit::fill_from_latest_sell(&deps.trade_repo, &trader, &wallet, &pos).await;
-        if orphan_exit::book_cleared_or_park(&orphan, &pos, fill).await.is_ok() {
+        if orphan_exit::resolve_if_bag_gone(&orphan, &pos).await {
             n += 1;
         }
     }

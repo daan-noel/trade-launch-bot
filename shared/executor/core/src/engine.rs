@@ -25,10 +25,61 @@ use solana_sdk::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Instant;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 use tracing::{info, warn};
+
+/// SOL kept back from every buy for the fees, tips and rent of the next sell.
+pub const RESERVE_FLOOR_LAMPORTS: u64 = 20_000_000;
+
+/// A slotless balance reading (an RPC poll at `confirmed`) covers a landed buy
+/// only when it was taken this long after the buy was seen at `processed`.
+const POLL_COVER_LAG: Duration = Duration::from_secs(5);
+
+/// A cached wallet balance and where it came from: `slot` is the slot of a
+/// pushed account update, `None` for an RPC poll.
+#[derive(Debug, Clone, Copy)]
+pub struct BalanceReading {
+    pub lamports: u64,
+    pub at: Instant,
+    pub slot: Option<u64>,
+}
+
+/// One buy's SOL earmark. While the buy is in flight its SOL is still in the
+/// wallet balance, so the earmark holds it back from the next buy. Once the buy
+/// lands (`settled`) the balance itself drops by it; the earmark stays only until
+/// a balance reading that already includes the buy, so the SOL is never counted
+/// as both free and spent, nor spent twice.
+#[derive(Debug, Clone, Copy)]
+pub struct SolReservation {
+    pub lamports: u64,
+    pub settled: Option<Settled>,
+}
+
+/// When a reserved buy was seen landing: its slot when known, and the instant.
+#[derive(Debug, Clone, Copy)]
+pub struct Settled {
+    pub slot: Option<u64>,
+    pub at: Instant,
+}
+
+impl SolReservation {
+    /// Whether this earmark still holds SOL back, given the cached balance.
+    fn holds(&self, balance: Option<&BalanceReading>) -> bool {
+        let Some(settled) = self.settled else {
+            return true;
+        };
+        let Some(reading) = balance else {
+            return true;
+        };
+        match (settled.slot, reading.slot) {
+            (Some(landed), Some(read)) => read < landed,
+            _ => reading.at < settled.at + POLL_COVER_LAG,
+        }
+    }
+}
 
 /// Per-nonce-account slot held in the hash cache.
 #[derive(Debug)]
@@ -100,6 +151,11 @@ pub struct Engine {
     /// it is only consulted on the cold recovery path.
     pub nonce_tx_index: Arc<DashMap<String, (Pubkey, Hash)>>,
     pub(crate) nonce_tx_order: Arc<std::sync::Mutex<VecDeque<String>>>,
+    /// The signature of a sell signed for a key (the mint) whose send has not
+    /// returned success. A send can fail or time out AFTER the tx reached the
+    /// network, and a durable-nonce tx never expires, so the caller must learn
+    /// this signature before it sends another sell (see [`Engine::take_signed_sell`]).
+    signed_sells: Arc<DashMap<String, String>>,
 
     // Diagnostic counters
     pub nonce_wait_events: AtomicUsize,
@@ -117,14 +173,17 @@ pub struct Engine {
     pub blockhash_cache: Arc<BlockhashCache>,
 
     // --- SOL exposure tracking ---
-    // Running sum of buy_amounts (lamports) for all real positions this process
-    // has committed to but not yet closed, shared via the `Arc<...Trader>` so
-    // strategies see the same open-commitment total.
-    pub committed_lamports: AtomicU64,
-    pub position_commitments: Arc<DashMap<String, u64>>,
-    // Cached on-chain SOL balance (lamports, fetch instant), refreshed in the
-    // background — never queried inline on the hot buy path.
-    pub balance_lamports_cache: Arc<std::sync::Mutex<Option<(u64, std::time::Instant)>>>,
+    // One earmark per buy whose SOL the cached wallet balance does not show as
+    // spent yet. A buy that landed is already out of the balance, so its earmark
+    // lasts only until a balance reading taken after it (see `SolReservation`).
+    pub position_commitments: Arc<DashMap<String, SolReservation>>,
+    // Serializes check-and-reserve, so two buys never both pass on the same SOL.
+    reserve_lock: Arc<std::sync::Mutex<()>>,
+    // Newest slot of a pushed balance; an older push is dropped.
+    balance_push_slot: AtomicU64,
+    // Cached on-chain SOL balance, refreshed in the background (push or poll) —
+    // never queried inline on the hot buy path.
+    pub balance_lamports_cache: Arc<std::sync::Mutex<Option<BalanceReading>>>,
 
     // Background tasks spawned in `initialize()` (Jito tip-floor, recent-blockhash,
     // Sender keep-warm). Held so `Drop` on the wrapping trader can abort them.
@@ -203,6 +262,7 @@ impl Engine {
             nonce_available: Arc::new(Notify::new()),
             nonce_tx_index: Arc::new(DashMap::new()),
             nonce_tx_order: Arc::new(std::sync::Mutex::new(VecDeque::new())),
+            signed_sells: Arc::new(DashMap::new()),
             nonce_wait_events: AtomicUsize::new(0),
             nonce_wait_iters_total: AtomicUsize::new(0),
             token_account_space,
@@ -210,8 +270,9 @@ impl Engine {
             token_2022_account_space,
             token_2022_account_rent,
             blockhash_cache: Arc::new(BlockhashCache::default()),
-            committed_lamports: AtomicU64::new(0),
             position_commitments: Arc::new(DashMap::new()),
+            reserve_lock: Arc::new(std::sync::Mutex::new(())),
+            balance_push_slot: AtomicU64::new(0),
             balance_lamports_cache: Arc::new(std::sync::Mutex::new(None)),
             background_tasks: Vec::new(),
         }
@@ -465,64 +526,126 @@ impl Engine {
         self.blockhash_cache.store_pushed(hash, slot);
     }
 
-    /// Reserve `buy_lamports` of SOL for `position_id`. Called before a real buy
-    /// is sent; the reservation persists until `release_sol_for_position`.
-    /// Idempotent for the same `position_id` — a second call is a no-op so engine
-    /// entry retries (each spawning a new submit task) cannot double-count.
+    /// Earmark `buy_lamports` for `position_id` without a balance check — for an
+    /// earmark carried over from another trader (a wallet rebuild) or re-made
+    /// at boot. Idempotent: an existing earmark is kept as it is.
     pub fn commit_sol_for_position(&self, position_id: String, buy_lamports: u64) {
-        use dashmap::mapref::entry::Entry;
-        match self.position_commitments.entry(position_id) {
-            Entry::Occupied(_) => {}
-            Entry::Vacant(v) => {
-                self.committed_lamports.fetch_add(buy_lamports, Ordering::Relaxed);
-                v.insert(buy_lamports);
+        self.position_commitments
+            .entry(position_id)
+            .or_insert(SolReservation { lamports: buy_lamports, settled: None });
+    }
+
+    /// Carry an earmark over exactly, settle state included (a wallet rebuild).
+    pub fn restore_reservation(&self, position_id: String, reservation: SolReservation) {
+        self.position_commitments.entry(position_id).or_insert(reservation);
+    }
+
+    /// Check-and-reserve in one step: earmark `buy_lamports` for `position_id`
+    /// only if the free SOL covers it, so concurrent buys on one wallet each see
+    /// the others. `true` when the earmark is held (made now, or already held by
+    /// an earlier attempt of the same position — a retry is never re-checked).
+    /// Fails **open** when no balance has been read yet, so a cold cache does not
+    /// block every buy at startup.
+    pub fn try_reserve_buy(&self, position_id: &str, buy_lamports: u64) -> bool {
+        let _serial = self.reserve_lock.lock().unwrap_or_else(|p| p.into_inner());
+        if self.position_commitments.contains_key(position_id) {
+            return true;
+        }
+        if let Some(free) = self.free_lamports() {
+            if free < buy_lamports {
+                return false;
+            }
+        }
+        self.position_commitments.insert(
+            position_id.to_string(),
+            SolReservation { lamports: buy_lamports, settled: None },
+        );
+        true
+    }
+
+    /// The reserved buy landed (`slot` of its fill when known): from here the
+    /// earmark lasts only until a balance reading that includes the buy.
+    pub fn settle_reservation(&self, position_id: &str, slot: Option<u64>) {
+        if let Some(mut r) = self.position_commitments.get_mut(position_id) {
+            if r.settled.is_none() {
+                r.settled = Some(Settled { slot, at: Instant::now() });
             }
         }
     }
 
+    /// Record a sell signed for `key` before it is sent.
+    pub fn note_signed_sell(&self, key: &str, signature: &str) {
+        self.signed_sells.insert(key.to_string(), signature.to_string());
+    }
+
+    /// The send of `signature` returned success: the caller has it in hand.
+    pub fn clear_signed_sell(&self, key: &str, signature: &str) {
+        self.signed_sells.remove_if(key, |_, s| s == signature);
+    }
+
+    /// The signature of the last sell signed for `key` whose send did not return
+    /// success — it may still be on the network. Taken once.
+    pub fn take_signed_sell(&self, key: &str) -> Option<String> {
+        self.signed_sells.remove(key).map(|(_, s)| s)
+    }
+
+    /// The SOL earmarked for `position_id`, if any.
+    pub fn reserved_lamports_for(&self, position_id: &str) -> Option<u64> {
+        self.position_commitments.get(position_id).map(|r| r.lamports)
+    }
+
     /// Release the reservation for `position_id`. No-op if never committed.
     pub fn release_sol_for_position(&self, position_id: &str) {
-        if let Some((_, lamports)) = self.position_commitments.remove(position_id) {
-            let _ = self.committed_lamports.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |cur| Some(cur.saturating_sub(lamports)),
-            );
-        }
+        self.position_commitments.remove(position_id);
     }
 
-    /// Total SOL committed (lamports) to open real positions.
+    /// SOL (lamports) earmarked for buys the cached balance does not reflect yet.
+    /// Drops the earmarks a balance reading has already covered.
     pub fn committed_lamports(&self) -> u64 {
-        self.committed_lamports.load(Ordering::Relaxed)
+        let balance = *self.balance_lamports_cache.lock().unwrap_or_else(|p| p.into_inner());
+        let mut held = 0u64;
+        self.position_commitments.retain(|_, r| {
+            let keep = r.holds(balance.as_ref());
+            if keep {
+                held = held.saturating_add(r.lamports);
+            }
+            keep
+        });
+        held
     }
 
-    /// Whether there is enough free SOL to commit `buy_lamports` more. Fails
-    /// **open** (returns `true`) when the cached balance is unknown so a stale
-    /// cache doesn't block all trades on startup.
+    /// Spendable SOL for the next buy: balance less the reserve floor and the
+    /// earmarks. `None` while no balance has been read.
+    fn free_lamports(&self) -> Option<u64> {
+        let balance = (*self.balance_lamports_cache.lock().unwrap_or_else(|p| p.into_inner()))?;
+        Some(
+            balance
+                .lamports
+                .saturating_sub(RESERVE_FLOOR_LAMPORTS)
+                .saturating_sub(self.committed_lamports()),
+        )
+    }
+
+    /// Whether there is enough free SOL to commit `buy_lamports` more, without
+    /// reserving it. Fails **open** while no balance has been read.
     pub fn can_commit_buy(&self, buy_lamports: u64) -> bool {
-        const RESERVE_FLOOR: u64 = 20_000_000; // 0.02 SOL — fees/tips/rent for the next sell.
-        let balance = match *self
-            .balance_lamports_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-        {
-            Some((lamports, _)) => lamports,
-            None => return true,
-        };
-        let committed = self.committed_lamports.load(Ordering::Relaxed);
-        balance
-            .saturating_sub(RESERVE_FLOOR)
-            .saturating_sub(committed)
-            >= buy_lamports
+        self.free_lamports().is_none_or(|free| free >= buy_lamports)
     }
 
-    /// Update the cached on-chain SOL balance. Called by the background refresh
-    /// task every ~30 s — never on the hot buy path.
+    /// Cache an RPC-polled balance (no slot).
     pub fn update_balance_lamports_cache(&self, lamports: u64) {
-        *self
-            .balance_lamports_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some((lamports, std::time::Instant::now()));
+        *self.balance_lamports_cache.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(BalanceReading { lamports, at: Instant::now(), slot: None });
+    }
+
+    /// Cache a pushed balance of account state at `slot`. A push older than the
+    /// newest one seen is a replay or an out-of-order frame and is dropped.
+    pub fn update_balance_lamports_at_slot(&self, lamports: u64, slot: u64) {
+        if self.balance_push_slot.fetch_max(slot, Ordering::Relaxed) > slot {
+            return;
+        }
+        *self.balance_lamports_cache.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(BalanceReading { lamports, at: Instant::now(), slot: Some(slot) });
     }
 
     /// Read the cached native SOL balance (lamports), if any. `None` until the
@@ -531,7 +654,7 @@ impl Engine {
         self.balance_lamports_cache
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .map(|(lamports, _)| lamports)
+            .map(|r| r.lamports)
     }
 
     /// `true` when the push-fed (or last polled) wallet balance is newer than
@@ -544,7 +667,7 @@ impl Engine {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
         {
-            Some((_, at)) => at.elapsed() < max_age,
+            Some(r) => r.at.elapsed() < max_age,
             None => false,
         }
     }
@@ -588,8 +711,30 @@ pub fn buy_lamports_checked(sol_amount: f64, max_buy_sol: f64) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::buy_lamports_checked;
+    use super::{buy_lamports_checked, BalanceReading, Settled, SolReservation, POLL_COVER_LAG};
     use crate::LAMPORTS_PER_SOL;
+    use std::time::{Duration, Instant};
+
+    fn reading(at: Instant, slot: Option<u64>) -> BalanceReading {
+        BalanceReading { lamports: 1, at, slot }
+    }
+
+    /// An in-flight buy holds its SOL; a landed one holds it only until a balance
+    /// reading that already shows it spent — never counted free, never twice.
+    #[test]
+    fn an_earmark_lasts_until_the_balance_shows_the_buy() {
+        let t0 = Instant::now();
+        let in_flight = SolReservation { lamports: 5, settled: None };
+        assert!(in_flight.holds(Some(&reading(t0, Some(100)))));
+        assert!(in_flight.holds(None));
+
+        let landed = SolReservation { lamports: 5, settled: Some(Settled { slot: Some(100), at: t0 }) };
+        assert!(landed.holds(Some(&reading(t0, Some(99)))), "a push from before the buy");
+        assert!(!landed.holds(Some(&reading(t0, Some(100)))), "a push at the buy's slot shows it spent");
+        assert!(landed.holds(Some(&reading(t0 + Duration::from_secs(1), None))), "a fresh poll may trail it");
+        assert!(!landed.holds(Some(&reading(t0 + POLL_COVER_LAG, None))));
+        assert!(landed.holds(None), "no balance yet: keep holding");
+    }
 
     /// The default `config.limits.max_buy_sol` the live trader uses.
     const MAX_BUY_SOL: f64 = 5.0;

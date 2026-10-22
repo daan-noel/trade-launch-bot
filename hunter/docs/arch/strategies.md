@@ -319,8 +319,8 @@ side-effects only.
 | `exec_real.rs` | `SubmitBuy`/`SubmitSell` → executor submit-and-return, then synthesize a definitive `FillConfirmed`/`FillFailed` from the **trades feed** (RPC watchdog fallback). SOL commit/release; M2 sync `SubmittedBuyJournal` + fire-and-forget bounded `mark_buy_submitted`; adopt skips PG when journal empty; curve sell uses cache reserves for min_out; `classify_swap_revert` heal; sell route re-read + rent reclaim. **Double-fire safe:** `FillFailed::Reverted` only when re-submitting is safe |
 | `exec_paper.rs` | lag-115 paper fill (`paper_fill`: last print by the signal plus 115 ms) → `FillConfirmed`. **`Fill::price` is SOL per RAW token unit**, so `token_amount = sol / price` with no decimals scaling — see below. Stashes the `PrintKey` (slot, tx_index, leg_index, block_time) of the print that priced each fill in `FillSigStore`; the token cache is signature-free, so the sink resolves the signature |
 | `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions chain on the handle); `Holding` updates registry sync then backgrounds fill persist; `ExitPending` PG is fire-and-forget; **terminal writes (`End`/`EntryFailed`/`ExitStuck`/`ExitUnconfirmed`) chain-spawn too — NO sink transition awaits PG on the loop** (see below); terminal SSE emits **before** `registry.remove` (so `position_id` / frozen `trade_mode` stay on the wire); `warm_runs` on rule reload (`ensure_run` reuses latest still-`Running` DB run + collapses empty leading shells — does not mint a new `run_seq` on every restart); releases SOL on terminal unentered exits. Inside each write task, a `PrintKey` (a paper fill's print, and the trigger print in both modes) resolves to its signature via `TradeRepo::print_signature` (3 reads, 250 ms apart) and lands where a real fill's does (`entry_tx_signatures`, `exit_tx_signatures`, `target_tx`, the buy leg of `position_fills`); a paper SELL leg keeps no ledger signature, because `uq_position_fills_sell_tx` guards only OUR sells and two paper positions can exit on one print (`FillSigKind::Print`); a miss writes the row without one |
-| `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send; stale ⇒ `needs_review` SSE); **externally-cleared Holding** book-close (PG `trades` net, no RPC); exit orphan nudge via `FillFailed` or shared `orphan_exit`; **ExitStuck-with-bag** redrive (PG-gated, backoff, bounded-then-park); `ExitStuck`/`ExitUnconfirmed` bag-gone heal → End; stale `ExitPending` bag-check → `ExitStuck` (real) / breakeven End (paper). Skips `InFlightGuards`-held rows/mints |
-| `orphan_exit.rs` | Shared direct-sell + PG book-close for registry-miss rows (Console close, ExitPending/ExitStuck reapers). Feed-confirm via `run_exit`; sibling mint clear → `ExternallyCleared` / PG End; boot adopts re-install manual TP/SL rules |
+| `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send; stale ⇒ `needs_review` SSE); **externally-cleared Holding** book-close (the `trades` net nominates, the chain decides — `orphan_exit::chain_bag`); exit orphan nudge via `FillFailed` or shared `orphan_exit`; **ExitStuck** redrive (backoff, bounded-then-park; the orphan sell proves the bag on chain); `ExitStuck`/`ExitUnconfirmed` bag-gone heal → End; stale `ExitPending` bag-check → `ExitStuck` (real) / breakeven End (paper). Skips `InFlightGuards`-held rows/mints |
+| `orphan_exit.rs` | Shared direct-sell + PG book-close for registry-miss rows (Console close, ExitPending/ExitStuck reapers). Feed-confirm via `run_exit`, after proving the row's earlier sells dead and the wallet's bag held on chain; the chain verdict (`chain_bag`) and the cleared-bag close (`close_cleared_bag`) every "bag gone" path shares; boot adopts re-install manual TP/SL rules |
 | `rule_readout.rs` (in `live/src/api/handlers/strategies/`) | The readout's HTTP surface. `GET .../positions/{id}/metrics[?at=exit\|entry]` answers from the live fold when `PositionRegistry` still holds the row, else replays the durable row + stored trades (fold under `web::block`); `GET /api/strategies/armed/metrics?mint=&rule=` and `.../armed/metric-series` do the armed pair. Both series routes share ONE body (`series_response`) differing only in a `SeriesAnchor`, so an armed row and a position row can never disagree about a grid row. Reaches the loop through `EngineCommand::ReadRule` (`oneshot` ack, 2 s - a UI poll must not queue behind trade decisions), **not** a per-tick publish, which would allocate on the hot path for a usually-closed modal. Each `404` keeps its own reason (manual position / deleted rule / trades aged out / never filled); a wedged loop is `503`. The wire carries names only - the registry path, the tag and span as authored, the full `label` (`m_flow.buy_sol @!volume [10s]`) and each condition's and line's `part` - never an engine ordinal, and non-finite readings serialize `null` |
 | `event_log.rs` | JSONL recorder (day + size segmented rotation, age/byte retention) + **conservative, bounded** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; replayed through `hunter_engine::observe`, which arms and folds but never acts; reads only the recent tail — see below). Dir = `EVENT_LOG_DIR` via `config::dir_from_env`: a relative value anchors to the loaded `.env`'s directory, never the CWD (see below) |
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
@@ -332,7 +332,7 @@ close — below), `manual_buy(pg_id, mint, lamports, exit)` (Console manual buy 
 fresh per-episode rule id + `Event::ManualBuy`), `set_manual_exit(pg_id, exit)`
 (per-position TP/SL resynthesis). `DeployState` also holds the shared
 `PositionRegistry` + `InFlightGuards` + engine `fill_tx` so Console orphan-close can
-sell without the registry and still fold sibling clears.
+sell without the registry and still fold a clear into an engine-held row.
 
 **Paper/sim fill units (locked).** A `Fill::price` is the feed's `price_per_token` =
 **SOL per RAW token unit** (`Trade::new`: `amount_sol / token_amount`, count in raw
@@ -476,9 +476,9 @@ destroyed by the same `up --build` that boot recovery exists to survive.
 
 **Mint-level exit lock:** `InFlightGuards` serializes sells per mint (shared ATA).
 A sibling's bot exit queues behind the one in flight (FIFO, bounded by the holder's
-worst case) and sends the moment it finishes. After a leader sell clears the wallet
-mint net (PG), siblings are booked `ExternallyCleared` / End — no parallel sell
-fan-out.
+worst case) and sends the moment it finishes. A sell sells its own amount only, so
+it never closes a sibling; a bag that left the wallet outside the bot is closed by
+the reaper once the chain shows it gone.
 
 ## Console close + externally-cleared reconcile
 
@@ -488,16 +488,18 @@ matrix — see [position-lifecycle.md](position-lifecycle.md) §3):
 1. Registry hit (Holding) → `manual_close(portion)` (engine `ManualClose`, SSE lifecycle).
    Optional `sell_bps` in `1..=9900` ⇒ partial (`Portion::BpsOfInitial`); omit / `10000` ⇒ Sell ALL.
    Partials reuse the partial-sell fill path (Holding preserved, `sold_bps` advances).
-2. Registry miss / `ExitStuck`/`ExitUnconfirmed` retry → if PG `trades` net ≤ 0, book
-   End (no sell RPC); else `orphan_exit::spawn_orphan_sell` (same `run_exit` feed
-   confirm). Retry on a parked bag un-parks it (fresh redrive budget). Partial
+2. Registry miss / `ExitStuck`/`ExitUnconfirmed` retry → `orphan_exit::spawn_orphan_sell`:
+   the row's own landed sell books it; an earlier sell not provably dead stops it; the
+   chain then decides — wallet empty ⇒ book End (no sell), short ⇒ park, held ⇒ sell
+   (same `run_exit` feed confirm). Retry on a parked bag un-parks it (fresh redrive budget). Partial
    `sell_bps` is rejected here (engine-held Holding only).
 3. Never returns 202 on a silent ignore (409/404/500 with an error body).
 
 When a manual wallet sell (`POST /api/solana/wallet/sell`) empties a held mint,
-the handler confirms via PG `trades` net, then for each open **real** Holding:
-registry hit → `reconcile_cleared` (`Event::ExternallyCleared`); miss → PG
-book-close (`orphan_exit::book_externally_cleared_pg`). The 60 s reaper also runs
+the handler waits for the chain to show the wallet empty of the mint and for the
+sell's leg in `trades`, then closes every open **real** row of that wallet on the mint
+(`orphan_exit::close_cleared_bag`: registry hit → `Event::ExternallyCleared`; miss →
+PG book-close). The 60 s reaper also runs
 `find_externally_cleared_holding_mints` so a missed reconcile cannot leave a
 ghost Holding.
 
