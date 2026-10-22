@@ -326,7 +326,9 @@ async fn history_nonces(rpc: &RpcClient, wallet: &Pubkey) -> Result<Vec<Pubkey>>
         let params = serde_json::json!([wallet.to_string(), {
             "transactionDetails": "full",
             "encoding": "jsonParsed",
-            "maxSupportedTransactionVersion": 0,
+            // 1, not 0: a page holding a version-1 transaction is rejected
+            // outright (-32015) when the client only claims support through 0.
+            "maxSupportedTransactionVersion": 1,
             "sortOrder": order,
             "limit": HISTORY_PAGE,
         }]);

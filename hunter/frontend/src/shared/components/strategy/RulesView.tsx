@@ -28,6 +28,7 @@ import { StatTile } from 'components/ui/StatTile';
 import { ToggleGroup } from 'components/ui/ToggleGroup';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { ModeBadge } from './ModeBadge';
+import { RuleModeToggle } from './RuleModeToggle';
 import { buildFingerprintRuleColumns } from './fingerprintRuleColumns';
 import { buildRuleTradeColumns } from './ruleParamsColumns';
 import { RuleExclusiveMark } from './RuleParamsSummary';
@@ -816,7 +817,11 @@ export function RulesView({
       label: 'Mode',
       group: 'rule',
       render: (r: StrategyRule) => (
-        <ModeBadge mode={r.trade_mode} />
+        <RuleModeToggle
+          rule={r}
+          disabled={stopByRule[r.id]?.status === 'running'}
+          onError={setOpErr}
+        />
       ),
       searchValue: (r) => r.trade_mode,
       sortValue: (r) => r.trade_mode,

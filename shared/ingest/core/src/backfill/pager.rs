@@ -238,7 +238,8 @@ pub async fn get_transactions_for_address_page(
         "transactionDetails": "full",
         "encoding": encoding,
         "commitment": "confirmed",
-        "maxSupportedTransactionVersion": 0,
+        // 1, not 0: a page holding a version-1 transaction is rejected outright.
+        "maxSupportedTransactionVersion": 1,
         "sortOrder": sort_order,
         "limit": limit.clamp(1, SIG_PAGE_LIMIT),
         "filters": { "status": "succeeded" }

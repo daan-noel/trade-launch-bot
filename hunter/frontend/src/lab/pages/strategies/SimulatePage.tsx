@@ -69,7 +69,7 @@ import { isCopyRule } from 'lib/strategy/copyRule';
 import { RULE_WORDS_TIP_DELAY_MS, RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { useRuleActions } from 'components/strategy/useRuleActions';
 import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
-import { ModeBadge } from 'components/strategy/ModeBadge';
+import { RuleModeToggle } from 'components/strategy/RuleModeToggle';
 import { RuleLabels } from 'components/strategy/RuleLabels';
 import { RuleModeFilter } from 'components/strategy/RuleModeFilter';
 import { RuleTagFilter } from 'components/strategy/RuleTagFilter';
@@ -1240,9 +1240,7 @@ function buildColumns(
       key: 'mode',
       label: 'Mode',
       group: 'rule',
-      render: (r) => (
-        <ModeBadge mode={r.trade_mode} />
-      ),
+      render: (r) => <RuleModeToggle rule={r} />,
       searchValue: (r) => r.trade_mode,
       sortValue: (r) => r.trade_mode,
     },
