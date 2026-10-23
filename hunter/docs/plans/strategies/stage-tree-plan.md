@@ -7,6 +7,24 @@ engine knows no group, tag or threshold; a rule names all of them.
 - **Situation**: what the owner and the outsiders do now. Re-picked every step.
 - **Cell**: one phase x one situation. Holds that stage's lines.
 
+The stage tree is a live decision structure, not a list of assumed token outcomes. A fingerprint
+may contain several recurring owner playbooks. Research discovers them from owner behavior;
+the rule expresses any actionable distinction through live phase, situation, and trigger
+conditions. Names such as "fast dump" and "migration" label later outcomes and never supply a
+live branch. A game distinction that needs cross-coin memory belongs in a separate rule layer
+(for example, the streak gate), not in a condition the tree cannot remember.
+
+```text
+discovered behavior pattern
+        -> live phase (where in this token's life)
+        -> live situation (what is happening now)
+        -> cell (context)
+        -> trigger (act now?)
+```
+
+The general research procedure, including game discovery, AMM exit, streak gate, validation,
+and maintenance, lives in [fingerprint-rule-method.md](fingerprint-rule-method.md).
+
 The 6ix case that motivates it: `hunter/_local/study-6ix-buy/NOTES.md` sections 16-16c.
 
 ## Rule document

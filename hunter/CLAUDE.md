@@ -74,8 +74,13 @@ script is local scratch - track it only when a rule or a gate needs it re-run, b
 naming it in the root `.gitignore`.
 
 **Deriving a rule for one fingerprint?** Follow
-[fingerprint-rule-workflow.md](docs/plans/strategies/fingerprint-rule-workflow.md): the operator's
-payoff and the outsiders first, a threshold per stage cell, every line with a story, eval read once.
+[fingerprint-rule-method.md](docs/plans/strategies/fingerprint-rule-method.md): discover the
+group's recurring owner playbooks without assuming outcome classes; describe them with live
+phases and situations; then find the rule loop (AMM exit, curve exits, streak gate, entry,
+exits again, until stable). Each trigger has a story and exact metrics and is judged in SOL
+inside the whole rule. Report results per playbook as well as under changing playbook mixes;
+the newest days decide, and later forward days stay untouched until final evaluation.
+Worked cases: `fingerprint-case-<slug>.md` beside it.
 
 **Studying a wallet?** Follow [_!___derive.md](docs/plans/strategies/_!___derive.md).
 The instrument set is the 26 solo traders, node by node
